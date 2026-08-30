@@ -11,17 +11,17 @@
 // Static-image / slow-pan "official videos": real finding, worth knowing before
 // touching hasMotion() below. Some officially-tagged, correctly-matched uploads
 // are just a still photo (sometimes with a slow Ken Burns-style pan/zoom applied,
-// which is NOT frame-identical, so ffmpeg's freezedetect filter alone misses it).
-// Confirmed on two real, user-reported cases: freezedetect found only ~7s of
-// "frozen" content out of a ~275s video that's genuinely a static photo the
-// whole way through. Scene-change counting (ffmpeg's scene-detection, counting
-// frames where the scene score crosses a threshold) is a much stronger signal:
-// a real produced music video has dozens to hundreds of cuts over a few minutes;
-// a static/panned photo has essentially zero, pan or no pan. Validated: a known
-// good video scored 184 scene changes over 210s (and 28 in just a 20s sample);
-// both known-bad static videos scored 2 total, full-length. hasMotion() checks
-// this on a short downloaded sample (not the full file) so a rejected candidate
-// doesn't cost a full download.
+// which is NOT frame-identical, so ffmpeg's freezedetect filter alone misses it -
+// confirmed on a real case: freezedetect found only ~7s of "frozen" content out
+// of a ~275s video that's genuinely a static photo the whole way through).
+// Scene-change counting is a much stronger signal: a real produced music video
+// has dozens to hundreds of cuts over a few minutes; a static/panned photo has
+// essentially zero, pan or no pan. hasMotion() runs this against YouTube's own
+// storyboard sprite images (the seek-bar hover-preview tiles) rather than any
+// part of the actual video - tiny (tens of KB) and covers the video's entire
+// duration, not just one sampled slice. Full validation numbers and the
+// sample-download approach this replaced (worked, but cost more and only saw
+// one slice of the timeline) are in the comment on hasMotion() itself.
 
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -157,54 +157,124 @@ function rankOfficialLive(results, artist, trackName) {
   return ranked;
 }
 
-// Downloads a short sample from partway through the video and counts scene
-// changes in it, to reject static-image/slow-pan "videos" before committing
-// to a full download. See the module header comment for why this approach
-// (over ffmpeg's freezedetect alone) and the real numbers that validated it.
-async function hasMotion(videoId, durationSec) {
-  const sampleStart = durationSec && durationSec > 60 ? Math.floor(durationSec * 0.3) : 30;
-  const sampleEnd = sampleStart + 20;
-  const tmpFile = path.join(os.tmpdir(), `ragearr-motioncheck-${videoId}-${Date.now()}.mkv`);
+// Checks for real motion using YouTube's own storyboard sprite images (the
+// tiles used for the seek-bar hover preview) instead of downloading any part
+// of the actual video. Tried a "download a ~20s sample, run scene-detect on
+// it" approach first - it worked, but costs several MB and only sees one
+// slice of the timeline (a real video with a long intro could land the
+// sample on a static/slow segment and be wrongly rejected). Storyboards are
+// tiny (tens of KB total, validated: ~40KB-175KB for a 3-4 minute song) and
+// cover the ENTIRE video's duration in a few dozen tiles, at essentially no
+// cost - strictly better on both cost and reliability. Validated against the
+// same real cases as the sample-based approach: known-good video scored 34
+// scene changes across its full-duration tile set, both confirmed-static
+// videos scored 2 - same clean separation, no video download needed at all.
+//
+// Falls back to allowing the candidate through if no storyboard is available
+// (e.g. some livestreams/restricted content don't have one) - same
+// fail-open philosophy as the rest of this module: don't block on a check
+// that couldn't actually run.
+const TILE_SIZE = 90; // YouTube's storyboard tile size, consistent across sb0-sb3
 
-  const downloaded = await new Promise((resolve) => {
+function fetchStoryboardMhtml(videoId) {
+  const tmpFile = path.join(os.tmpdir(), `ragearr-storyboard-${videoId}-${Date.now()}.mhtml`);
+  return new Promise((resolve) => {
     execFile(
       YTDLP,
-      [
-        '-f', 'bestvideo[vcodec!*=av01][height<=480]+bestaudio/best',
-        '--download-sections', `*${sampleStart}-${sampleEnd}`,
-        '--force-keyframes-at-cuts',
-        '--merge-output-format', 'mkv',
-        '--no-progress',
-        '-o', tmpFile,
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ],
-      { maxBuffer: 20 * 1024 * 1024, timeout: 60000 },
-      (err) => resolve(!err && fs.existsSync(tmpFile))
+      ['-f', 'sb1', '--no-progress', '-o', tmpFile, `https://www.youtube.com/watch?v=${videoId}`],
+      { maxBuffer: 5 * 1024 * 1024, timeout: 30000 },
+      (err) => resolve(!err && fs.existsSync(tmpFile) ? tmpFile : null)
     );
   });
+}
 
-  if (!downloaded) {
-    // Sample download itself failed - don't block on a motion check we
-    // couldn't actually run; let the candidate through and let the real
-    // download (or lack thereof) surface the problem instead.
-    return true;
+// Storyboard sprite images are embedded in the .mhtml as raw binary (no
+// base64/Content-Transfer-Encoding), one part per "Content-type: image/webp"
+// block, sized per its own declared Content-length header.
+function extractStoryboardImages(mhtmlPath) {
+  const buf = fs.readFileSync(mhtmlPath);
+  const text = buf.toString('latin1');
+  const re = /Content-type: image\/webp\r?\nContent-length: (\d+)\r?\n[^]*?\r?\n\r?\n/g;
+  const images = [];
+  let m;
+  while ((m = re.exec(text))) {
+    const len = parseInt(m[1], 10);
+    const start = m.index + m[0].length;
+    images.push(buf.subarray(start, start + len));
   }
+  return images;
+}
 
-  try {
-    const sceneCount = await new Promise((resolve) => {
-      execFile(
-        FFMPEG,
-        ['-i', tmpFile, '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-'],
-        { maxBuffer: 20 * 1024 * 1024, timeout: 30000 },
-        (err, stdout, stderr) => {
-          const matches = (stderr || '').match(/Parsed_showinfo/g);
-          resolve(matches ? matches.length : 0);
-        }
-      );
+async function sliceIntoTiles(webpBuffers, tileDir) {
+  let n = 0;
+  for (const webpBuf of webpBuffers) {
+    const gridPath = path.join(tileDir, `grid_${n}.webp`);
+    fs.writeFileSync(gridPath, webpBuf);
+    const dims = await new Promise((resolve) => {
+      execFile(FFMPEG, ['-i', gridPath], { timeout: 10000 }, (err, stdout, stderr) => {
+        const dm = (stderr || '').match(/Stream.*Video.* (\d+)x(\d+)/);
+        resolve(dm ? { w: parseInt(dm[1], 10), h: parseInt(dm[2], 10) } : null);
+      });
     });
+    if (!dims) continue;
+    const cols = Math.floor(dims.w / TILE_SIZE);
+    const rows = Math.floor(dims.h / TILE_SIZE);
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const outPath = path.join(tileDir, `tile_${String(n).padStart(4, '0')}.png`);
+        await new Promise((resolve) => {
+          execFile(
+            FFMPEG,
+            ['-y', '-i', gridPath, '-vf', `crop=${TILE_SIZE}:${TILE_SIZE}:${col * TILE_SIZE}:${row * TILE_SIZE}`, '-frames:v', '1', outPath],
+            { timeout: 10000 },
+            () => resolve()
+          );
+        });
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
+async function countSceneChangesInTiles(tileDir, tileCount) {
+  if (tileCount < 2) return 0;
+  const videoPath = path.join(tileDir, 'synthetic.mp4');
+  await new Promise((resolve) => {
+    execFile(
+      FFMPEG,
+      ['-y', '-framerate', '1', '-i', path.join(tileDir, 'tile_%04d.png'), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoPath],
+      { timeout: 20000 },
+      () => resolve()
+    );
+  });
+  return new Promise((resolve) => {
+    execFile(
+      FFMPEG,
+      ['-i', videoPath, '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-'],
+      { maxBuffer: 20 * 1024 * 1024, timeout: 30000 },
+      (err, stdout, stderr) => {
+        const matches = (stderr || '').match(/Parsed_showinfo/g);
+        resolve(matches ? matches.length : 0);
+      }
+    );
+  });
+}
+
+async function hasMotion(videoId) {
+  const mhtmlPath = await fetchStoryboardMhtml(videoId);
+  if (!mhtmlPath) return true; // no storyboard available - don't block on it
+
+  const tileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ragearr-tiles-'));
+  try {
+    const images = extractStoryboardImages(mhtmlPath);
+    if (images.length === 0) return true; // couldn't parse - fail open
+    const tileCount = await sliceIntoTiles(images, tileDir);
+    const sceneCount = await countSceneChangesInTiles(tileDir, tileCount);
     return sceneCount >= MOTION_CHECK_SCENE_THRESHOLD;
   } finally {
-    fs.unlink(tmpFile, () => {});
+    fs.rmSync(tileDir, { recursive: true, force: true });
+    fs.unlink(mhtmlPath, () => {});
   }
 }
 
@@ -212,10 +282,10 @@ async function hasMotion(videoId, durationSec) {
 // until one passes (real video) or the list runs out (all static/rejected).
 // Returns { picked, rejected } - rejected is kept for visibility into what
 // got skipped and why, useful for the review queue / debugging bad matches.
-async function pickFirstWithMotion(ranked, durationSec) {
+async function pickFirstWithMotion(ranked) {
   const rejected = [];
   for (const candidate of ranked) {
-    const ok = await hasMotion(candidate.video.id, durationSec || candidate.video.duration);
+    const ok = await hasMotion(candidate.video.id);
     if (ok) return { picked: candidate, rejected };
     rejected.push(candidate.video.id);
   }
@@ -237,7 +307,7 @@ async function findCandidate({ artist, trackName, durationSec }) {
     (c) => c.score >= 5 && (c.chMatch || c.video.views > 50000)
   );
   if (highTierCandidates.length > 0) {
-    const { picked, rejected } = await pickFirstWithMotion(highTierCandidates, durationSec);
+    const { picked, rejected } = await pickFirstWithMotion(highTierCandidates);
     if (picked) {
       return { tier: 'high', type: 'official_mv', video: picked.video, score: picked.score, rejectedStatic: rejected };
     }
@@ -248,7 +318,7 @@ async function findCandidate({ artist, trackName, durationSec }) {
 
   const mediumTierCandidates = rankedMv.filter((c) => c.score >= 2 && !highTierCandidates.includes(c));
   if (mediumTierCandidates.length > 0) {
-    const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates, durationSec);
+    const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates);
     if (picked) {
       return { tier: 'medium', type: 'official_mv', video: picked.video, score: picked.score, rejectedStatic: rejected };
     }
@@ -258,7 +328,7 @@ async function findCandidate({ artist, trackName, durationSec }) {
   const rankedLive = rankOfficialLive(liveResults, artist, trackName);
   const liveCandidates = rankedLive.filter((c) => c.score >= 4);
   if (liveCandidates.length > 0) {
-    const { picked, rejected } = await pickFirstWithMotion(liveCandidates, durationSec);
+    const { picked, rejected } = await pickFirstWithMotion(liveCandidates);
     if (picked) {
       return { tier: 'medium', type: 'official_live', video: picked.video, score: picked.score, rejectedStatic: rejected };
     }
