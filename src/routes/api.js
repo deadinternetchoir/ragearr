@@ -3,6 +3,7 @@ const db = require('../db');
 const settings = require('../services/settings');
 const youtube = require('../services/youtube');
 const prowlarr = require('../services/prowlarr');
+const rtorrent = require('../services/downloadClients/rtorrent');
 
 const router = express.Router();
 
@@ -12,6 +13,14 @@ function getProwlarrClient() {
     return null;
   }
   return prowlarr.makeClient(cfg);
+}
+
+function getRtorrentClient() {
+  const cfg = settings.get('rtorrent');
+  if (!cfg || !cfg.host || !cfg.user || !cfg.sshKeyPath || !cfg.socketPath) {
+    return null;
+  }
+  return rtorrent.makeClient(cfg);
 }
 
 // --- Wanted lists ---
@@ -154,21 +163,55 @@ router.get('/concerts/grabs', (req, res) => {
   res.json(db.prepare('SELECT * FROM concert_grabs ORDER BY created_at DESC').all());
 });
 
-router.post('/concerts/grabs', (req, res) => {
-  const { artist, release_title, indexer_id, indexer_name, guid, metadata } = req.body;
+router.get('/settings/rtorrent', (req, res) => {
+  res.json(settings.get('rtorrent') || {});
+});
+
+router.put('/settings/rtorrent', (req, res) => {
+  const { host, user, sshKeyPath, socketPath } = req.body;
+  if (!host || !user || !sshKeyPath || !socketPath) {
+    return res.status(400).json({ error: 'host, user, sshKeyPath, and socketPath are required' });
+  }
+  settings.set('rtorrent', { host, user, sshKeyPath, socketPath });
+  res.json({ ok: true });
+});
+
+// Grabbing a concert release actually dispatches it to rTorrent (requires
+// PUT /api/settings/rtorrent to be configured first). Uses the release's
+// downloadUrl from a Prowlarr search result - Prowlarr proxies the real
+// .torrent file through itself, so this URL works directly with rTorrent's
+// load.start regardless of which underlying indexer it came from.
+router.post('/concerts/grabs', async (req, res) => {
+  const { artist, release_title, indexer_id, indexer_name, guid, download_url, metadata } = req.body;
   if (!artist || !release_title) {
     return res.status(400).json({ error: 'artist and release_title are required' });
   }
+
   const info = db
     .prepare(
       `INSERT INTO concert_grabs (artist, release_title, indexer_id, indexer_name, guid, metadata_json)
        VALUES (?, ?, ?, ?, ?, ?)`
     )
     .run(artist, release_title, indexer_id || null, indexer_name || null, guid || null, JSON.stringify(metadata || {}));
-  // NOTE: this records the grab intent but does not yet dispatch to a
-  // download client — that integration isn't built yet, see
-  // src/services/downloadClients/README.md.
-  res.status(201).json({ id: info.lastInsertRowid });
+  const grabId = info.lastInsertRowid;
+
+  if (!download_url) {
+    return res.status(201).json({ id: grabId, status: 'grabbed', warning: 'no download_url provided, not dispatched to rTorrent' });
+  }
+
+  const client = getRtorrentClient();
+  if (!client) {
+    return res.status(201).json({ id: grabId, status: 'grabbed', warning: 'rTorrent is not configured - see PUT /api/settings/rtorrent' });
+  }
+
+  try {
+    await client.addByUrl(download_url);
+    db.prepare("UPDATE concert_grabs SET status = 'downloading' WHERE id = ?").run(grabId);
+    res.status(201).json({ id: grabId, status: 'downloading' });
+  } catch (e) {
+    db.prepare("UPDATE concert_grabs SET status = 'failed' WHERE id = ?").run(grabId);
+    res.status(502).json({ id: grabId, status: 'failed', error: e.message });
+  }
 });
 
 module.exports = router;
