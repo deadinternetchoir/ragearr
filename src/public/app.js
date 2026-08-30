@@ -45,14 +45,18 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
-// ---------------------------------------------------------------- Tabs ----
+// ------------------------------------------------------------- Sidebar ----
 
-document.querySelectorAll('.tab-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+const VIEW_TITLES = { tracks: 'Tracks', concerts: 'Concerts', settings: 'Settings' };
+
+document.querySelectorAll('.sidebar-item').forEach((item) => {
+  item.querySelector('a').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.querySelectorAll('.sidebar-item').forEach((i) => i.classList.remove('active'));
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('view-' + btn.dataset.view).classList.add('active');
+    item.classList.add('active');
+    document.getElementById('view-' + item.dataset.view).classList.add('active');
+    document.getElementById('pageTitle').textContent = VIEW_TITLES[item.dataset.view] || '';
   });
 });
 
