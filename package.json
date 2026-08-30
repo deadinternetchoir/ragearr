@@ -1,0 +1,21 @@
+{
+  "name": "ragearr",
+  "version": "0.1.0",
+  "description": "A Servarr-family app for finding, downloading, and organizing music videos.",
+  "license": "GPL-3.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
+  }
+}

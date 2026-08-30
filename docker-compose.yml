@@ -1,0 +1,13 @@
+services:
+  ragearr:
+    build: .
+    container_name: ragearr
+    ports:
+      - "5299:5299"
+    volumes:
+      - ./config:/config
+      # Mount your music video library path so imports land in the right place
+      - /path/to/your/MusicVideos:/musicvideos
+    environment:
+      - TZ=Etc/UTC
+    restart: unless-stopped
