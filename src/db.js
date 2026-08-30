@@ -51,8 +51,26 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
+-- "Concerts" feature: artist-level full concert/live-show acquisition via
+-- Prowlarr. Deliberately separate from tracks/candidates above — indexer
+-- "Music Video" categories are populated with full concert releases, not
+-- individual song clips, so this is a distinct browse-and-grab flow rather
+-- than part of the per-track review queue. See docs/prowlarr-notes.md.
+CREATE TABLE IF NOT EXISTS concert_grabs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  artist TEXT NOT NULL,
+  release_title TEXT NOT NULL,
+  indexer_id INTEGER,
+  indexer_name TEXT,
+  guid TEXT,                     -- Prowlarr release GUID, used to fetch the download link
+  status TEXT NOT NULL DEFAULT 'grabbed', -- grabbed | downloading | downloaded | imported | failed
+  metadata_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);
 CREATE INDEX IF NOT EXISTS idx_candidates_track ON candidates(track_id);
+CREATE INDEX IF NOT EXISTS idx_concert_grabs_artist ON concert_grabs(artist);
 `);
 
 module.exports = db;

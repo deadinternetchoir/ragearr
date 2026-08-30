@@ -8,16 +8,21 @@ Named after [*Rage*](https://en.wikipedia.org/wiki/Rage_(TV_program)), the long-
 
 ## What it does
 
-- Takes a "wanted" list of artist/track pairs (e.g. imported from a Spotify/Apple Music playlist export) and finds music videos for them.
-- Pulls releases through **Prowlarr**, so it inherits whatever indexers you already have configured — same as Sonarr/Radarr/Lidarr.
-- Sends grabs to your existing **download client** (qBittorrent, SABnzbd, rTorrent, etc.).
-- Falls back to a YouTube-based source (via `yt-dlp`) for videos that genuinely aren't available through traditional indexers — common for official/live music videos.
-- A review queue for candidate matches — this is deliberately **not** a fully automated black box. Music video releases are messy (lyric videos mislabeled as official, live performances, wrong-song false matches, unofficial reuploads), so Ragearr surfaces its confidence and lets you approve/reject before anything downloads.
+Two distinct features, deliberately kept separate — see [docs/prowlarr-notes.md](./docs/prowlarr-notes.md) for why:
+
+**Per-track music videos** (the primary path):
+- Takes a "wanted" list of artist/track pairs (e.g. imported from a Spotify/Apple Music playlist export) and finds a music video for each one.
+- Sourced via YouTube (`yt-dlp`) — validated against a real 148-track playlist and tuned from real false positives (wrong-song matches, lyric videos mislabeled as official, unofficial reuploads). Indexer-based sources (Prowlarr) were tried first and found not to work for this: indexer "Music Video" categories are populated with full concert films, not individual song clips.
+- A review queue for candidates, not full automation — Ragearr surfaces its confidence tier (high/medium/none) and its reasoning; you approve before anything downloads.
 - Imports finished files into your media library folder structure and refreshes **Plex** or **Jellyfin** (pluggable target backend — more targets welcome).
+
+**Concerts** (a distinct, artist-level feature):
+- Pulls full concert films / live-show releases through **Prowlarr**, so it inherits whatever indexers you already have configured — same as Sonarr/Radarr/Lidarr.
+- Sends grabs to your existing **download client** (qBittorrent, SABnzbd, rTorrent, etc. — not yet implemented, see CONTRIBUTING.md).
 
 ## Why not just use Lidarr?
 
-Lidarr handles audio. Nothing in the Servarr family handles the actual *video* side of "music video" — this fills that gap using the same conventions (Prowlarr for indexers, a standard download-client abstraction, a review/wanted-list UI) rather than reinventing acquisition from scratch.
+Considered forking Lidarr (or Radarr — architecturally the closer fit, since its per-item video/quality-profile model matches "one music video file per song" better than Lidarr's audio-album hierarchy) instead of building standalone. Decided against it: this exact feature has been an [open, unresolved Lidarr issue since 2019](https://github.com/lidarr/Lidarr/issues/762), and the one real prior attempt at a companion tool has been abandoned since 2020. Forking and tracking an actively-developed ~300MB C#/.NET codebase is a heavy, ongoing burden for a solo/small effort. Ragearr integrates with the same tools (Prowlarr, download clients) without inheriting that maintenance cost.
 
 ## Quick start
 
