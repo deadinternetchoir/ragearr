@@ -1,99 +1,204 @@
+/*
+ * Structurally matches the Servarr family (Sonarr/Radarr/Lidarr/Prowlarr) -
+ * same grays, spacing, and layout conventions, taken directly from Radarr's
+ * real theme source (frontend/src/Styles/Themes/dark.js) so this feels like
+ * a genuine member of the stack rather than a reskin. Ragearr keeps its own
+ * accent color, the same way each *arr has its own (Sonarr blue, Radarr
+ * yellow) while sharing the same underlying dark theme.
+ */
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --border: #2a2e38;
-  --text: #e6e8ec;
-  --text-dim: #9aa1ad;
-  --accent: #e0463a;
-  --accent-hover: #f0574a;
-  --tier-high: #3fb950;
-  --tier-medium: #d29922;
-  --tier-none: #6e7681;
+  --page-background: #202020;
+  --sidebar-background: #2a2a2a;
+  --sidebar-active-background: #333333;
+  --sidebar-color: #e1e2e3;
+  --toolbar-background: #262626;
+  --card-background: #333333;
+  --border-color: #393f45;
+  --text-color: #ccc;
+  --dim-color: #909293;
+  --white: #fff;
+
+  --accent: #e0463a; /* Ragearr's own brand color - the family's "each has one" convention */
+  --accent-hover: #f2594d;
+
+  --success: #27c24c;
+  --danger: #f05050;
+  --warning: #ff902b;
+  --info: #5d9cec;
+
+  --tier-high: #27c24c;
+  --tier-medium: #ff902b;
+  --tier-none: #7a7a7a;
+
+  --sidebar-width: 210px;
+  --header-height: 60px;
+  --font-family: Roboto, "open sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  font-family: var(--font-family);
+  font-size: 14px;
+  line-height: 1.528571429;
+  background: var(--page-background);
+  color: var(--text-color);
 }
 
-.topbar {
+a { color: var(--info); text-decoration: none; }
+a:hover { color: var(--white); }
+
+/* ---------------------------------------------------------------- Page --- */
+
+.page {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  background: var(--sidebar-background);
+  color: var(--sidebar-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-brand {
+  height: var(--header-height);
   display: flex;
   align-items: center;
-  gap: 2rem;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--white);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
-.topbar h1 { margin: 0; font-size: 1.3rem; }
+.sidebar-brand .accent-dot { color: var(--accent); }
 
-.tabs { display: flex; gap: 0.5rem; }
-.tab-btn {
-  background: none;
-  border: 1px solid transparent;
-  color: var(--text-dim);
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.95rem;
+.sidebar-item {
+  border-left: 3px solid transparent;
+  transition: border-left 0.2s ease-in-out;
 }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--text); background: var(--panel); border-color: var(--border); }
+.sidebar-item a {
+  display: block;
+  padding: 12px 24px;
+  color: var(--sidebar-color);
+  font-size: 15px;
+}
+.sidebar-item a:hover { color: var(--accent); }
+.sidebar-item.active {
+  border-left-color: var(--accent);
+  background: var(--sidebar-active-background);
+}
+.sidebar-item.active a { color: var(--accent); }
+.sidebar-item .icon { display: inline-block; width: 20px; margin-right: 8px; text-align: center; }
 
-main { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+.page-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.page-header {
+  height: var(--header-height);
+  background: var(--toolbar-background);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  color: var(--white);
+  font-size: 17px;
+  font-weight: 500;
+}
+
+main { flex: 1; padding: 24px; max-width: 1100px; width: 100%; margin: 0 auto; }
 
 .view { display: none; }
 .view.active { display: block; }
 
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.25rem;
-  margin-bottom: 1.25rem;
+/* --------------------------------------------------------------- Cards --- */
+
+.card {
+  background: var(--card-background);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+  padding: 20px;
+  margin-bottom: 20px;
 }
-.panel h2 { margin: 0 0 0.75rem; font-size: 1rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dim-color);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
-.hint { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
-.warning { color: var(--tier-medium); font-size: 0.9rem; }
+.hint { color: var(--dim-color); font-size: 13px; margin: 0 0 12px; }
+.warning { color: var(--warning); font-size: 13px; }
 
-.row { display: flex; gap: 0.5rem; align-items: center; }
+/* -------------------------------------------------------------- Forms --- */
+
+.row { display: flex; gap: 10px; align-items: center; }
 .row.wrap { flex-wrap: wrap; }
-.col { display: flex; flex-direction: column; gap: 0.6rem; max-width: 480px; }
-.col label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--text-dim); }
+.col { display: flex; flex-direction: column; gap: 10px; max-width: 480px; }
+.col label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--dim-color); }
 
 input, select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 0.5rem 0.65rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
+  background: #333;
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: var(--font-family);
 }
-input:focus, select:focus { outline: 1px solid var(--accent); }
+input:focus, select:focus {
+  outline: none;
+  border-color: #66afe9;
+  box-shadow: 0 0 0 2px rgba(102, 175, 233, 0.3);
+}
 
 button {
   background: var(--accent);
-  color: white;
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
+  border: 1px solid var(--accent);
+  color: var(--white);
+  padding: 7px 16px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 14px;
+  font-family: var(--font-family);
 }
-button:hover { background: var(--accent-hover); }
-button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
-button.secondary:hover { background: var(--border); }
+button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.secondary {
+  background: #333;
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+button.secondary:hover { background: #444; border-color: #5a6265; }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
-th { color: var(--text-dim); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+/* ------------------------------------------------------------- Tables --- */
 
-.tier { padding: 0.15em 0.55em; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: #0f1115; }
-.tier-high { background: var(--tier-high); }
-.tier-medium { background: var(--tier-medium); }
-.tier-none, .tier-unknown { background: var(--tier-none); color: white; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border-color); }
+th { color: var(--dim-color); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+tbody tr:hover { background: rgba(255, 255, 255, 0.08); }
 
-.status-pill { color: var(--text-dim); font-size: 0.85rem; }
+.tier {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #1a1a1a;
+}
+.tier-high { background: var(--tier-high); color: #0b2b13; }
+.tier-medium { background: var(--tier-medium); color: #2b1600; }
+.tier-none, .tier-unknown { background: var(--tier-none); color: var(--white); }
+
+.status-pill { color: var(--dim-color); font-size: 13px; }
