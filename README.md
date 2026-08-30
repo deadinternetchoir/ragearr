@@ -40,9 +40,9 @@ See [`docker-compose.yml`](./docker-compose.yml) for configuration. Full setup d
 │   ├── db.js                  — SQLite schema + migrations
 │   ├── routes/                — REST API
 │   ├── services/
-│   │   ├── prowlarr.js        — indexer search via Prowlarr's API
-│   │   ├── downloadClients/   — qBittorrent/SABnzbd/rTorrent/etc. clients
-│   │   ├── youtube.js         — yt-dlp-based fallback source + candidate scoring
+│   │   ├── prowlarr.js        — Concerts feature: indexer search via Prowlarr's API
+│   │   ├── downloadClients/   — rTorrent (via SSH) implemented; qBittorrent/SABnzbd/etc. not yet
+│   │   ├── youtube.js         — primary per-track source + candidate scoring
 │   │   └── mediaServers/
 │   │       ├── plex.js
 │   │       └── jellyfin.js    — target backends, swappable

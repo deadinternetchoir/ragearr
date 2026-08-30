@@ -13,6 +13,9 @@ npm-debug.log*
 .env
 .env.local
 
+# SSH keys - never commit private keys
+.ssh/
+
 # Editor/OS
 .DS_Store
 Thumbs.db
