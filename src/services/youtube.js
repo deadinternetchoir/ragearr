@@ -7,13 +7,30 @@
 //     covering artist's (channel-match gate helps but isn't foolproof — needs
 //     an explicit "is this a cover" signal, e.g. checking if the query artist
 //     appears anywhere in the candidate title/channel at all before accepting).
-//   - "Full album stream" / "official audio" uploads (Epitaph Records does this
-//     a lot) pass the title-match gate correctly but aren't real videos — worth
-//     an explicit exclude-phrase list rather than relying on scoring alone.
+//
+// Static-image / slow-pan "official videos": real finding, worth knowing before
+// touching hasMotion() below. Some officially-tagged, correctly-matched uploads
+// are just a still photo (sometimes with a slow Ken Burns-style pan/zoom applied,
+// which is NOT frame-identical, so ffmpeg's freezedetect filter alone misses it).
+// Confirmed on two real, user-reported cases: freezedetect found only ~7s of
+// "frozen" content out of a ~275s video that's genuinely a static photo the
+// whole way through. Scene-change counting (ffmpeg's scene-detection, counting
+// frames where the scene score crosses a threshold) is a much stronger signal:
+// a real produced music video has dozens to hundreds of cuts over a few minutes;
+// a static/panned photo has essentially zero, pan or no pan. Validated: a known
+// good video scored 184 scene changes over 210s (and 28 in just a 20s sample);
+// both known-bad static videos scored 2 total, full-length. hasMotion() checks
+// this on a short downloaded sample (not the full file) so a rejected candidate
+// doesn't cost a full download.
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+const MOTION_CHECK_SCENE_THRESHOLD = 5; // minimum scene changes in the sample to count as "real video"
 
 function ytSearch(query, count = 6) {
   return new Promise((resolve) => {
@@ -93,10 +110,11 @@ function isExcluded(title) {
   return EXCLUDE_PHRASES.some((re) => re.test(title));
 }
 
-function scoreOfficialMv(results, artist, trackName, trackDurationSec) {
-  let best = null;
-  let bestScore = -1;
-  let bestChMatch = false;
+// Returns every plausible candidate ranked best-first (not just the top one),
+// so findCandidate() can fall through to the next-best if the top pick turns
+// out to be a static image (see hasMotion() below).
+function rankOfficialMv(results, artist, trackName, trackDurationSec) {
+  const ranked = [];
   for (const r of results) {
     if (!r.title || !r.channel) continue;
     if (isExcluded(r.title)) continue;
@@ -115,18 +133,14 @@ function scoreOfficialMv(results, artist, trackName, trackDurationSec) {
       else if (diff > 90) score -= 2;
     }
     if (isLive) score -= 1;
-    if (score > bestScore) {
-      bestScore = score;
-      best = r;
-      bestChMatch = chMatch;
-    }
+    ranked.push({ video: r, score, chMatch });
   }
-  return { best, score: bestScore, chMatch: bestChMatch };
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked;
 }
 
-function scoreOfficialLive(results, artist, trackName) {
-  let best = null;
-  let bestScore = -1;
+function rankOfficialLive(results, artist, trackName) {
+  const ranked = [];
   for (const r of results) {
     if (!r.title || !r.channel) continue;
     if (isExcluded(r.title)) continue;
@@ -137,37 +151,120 @@ function scoreOfficialLive(results, artist, trackName) {
     if (!chMatch) continue; // only trust official-channel live performances
     let score = 2; // baseline for channel match
     if (isLive) score += 3;
-    if (score > bestScore) {
-      bestScore = score;
-      best = r;
-    }
+    ranked.push({ video: r, score, chMatch });
   }
-  return { best, score: bestScore };
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked;
+}
+
+// Downloads a short sample from partway through the video and counts scene
+// changes in it, to reject static-image/slow-pan "videos" before committing
+// to a full download. See the module header comment for why this approach
+// (over ffmpeg's freezedetect alone) and the real numbers that validated it.
+async function hasMotion(videoId, durationSec) {
+  const sampleStart = durationSec && durationSec > 60 ? Math.floor(durationSec * 0.3) : 30;
+  const sampleEnd = sampleStart + 20;
+  const tmpFile = path.join(os.tmpdir(), `ragearr-motioncheck-${videoId}-${Date.now()}.mkv`);
+
+  const downloaded = await new Promise((resolve) => {
+    execFile(
+      YTDLP,
+      [
+        '-f', 'bestvideo[vcodec!*=av01][height<=480]+bestaudio/best',
+        '--download-sections', `*${sampleStart}-${sampleEnd}`,
+        '--force-keyframes-at-cuts',
+        '--merge-output-format', 'mkv',
+        '--no-progress',
+        '-o', tmpFile,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ],
+      { maxBuffer: 20 * 1024 * 1024, timeout: 60000 },
+      (err) => resolve(!err && fs.existsSync(tmpFile))
+    );
+  });
+
+  if (!downloaded) {
+    // Sample download itself failed - don't block on a motion check we
+    // couldn't actually run; let the candidate through and let the real
+    // download (or lack thereof) surface the problem instead.
+    return true;
+  }
+
+  try {
+    const sceneCount = await new Promise((resolve) => {
+      execFile(
+        FFMPEG,
+        ['-i', tmpFile, '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-'],
+        { maxBuffer: 20 * 1024 * 1024, timeout: 30000 },
+        (err, stdout, stderr) => {
+          const matches = (stderr || '').match(/Parsed_showinfo/g);
+          resolve(matches ? matches.length : 0);
+        }
+      );
+    });
+    return sceneCount >= MOTION_CHECK_SCENE_THRESHOLD;
+  } finally {
+    fs.unlink(tmpFile, () => {});
+  }
+}
+
+// Walks a ranked candidate list best-first, running the motion check on each
+// until one passes (real video) or the list runs out (all static/rejected).
+// Returns { picked, rejected } - rejected is kept for visibility into what
+// got skipped and why, useful for the review queue / debugging bad matches.
+async function pickFirstWithMotion(ranked, durationSec) {
+  const rejected = [];
+  for (const candidate of ranked) {
+    const ok = await hasMotion(candidate.video.id, durationSec || candidate.video.duration);
+    if (ok) return { picked: candidate, rejected };
+    rejected.push(candidate.video.id);
+  }
+  return { picked: null, rejected };
 }
 
 /**
  * Find a music video candidate for a track. Returns
- * { tier: 'high'|'medium'|'none', type: 'official_mv'|'official_live'|null, video, score }
+ * { tier: 'high'|'medium'|'none', type: 'official_mv'|'official_live'|null,
+ *   video, score, rejectedStatic }
+ * rejectedStatic lists any candidate video IDs that scored well but were
+ * rejected by the motion check (static image / slow-pan) before this pick.
  */
 async function findCandidate({ artist, trackName, durationSec }) {
   const mvResults = await ytSearch(`${artist} ${trackName} official music video`);
-  const mvMatch = scoreOfficialMv(mvResults, artist, trackName, durationSec);
-  const corroborated = mvMatch.chMatch || (mvMatch.best && mvMatch.best.views > 50000);
+  const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec);
 
-  if (mvMatch.best && mvMatch.score >= 5 && corroborated) {
-    return { tier: 'high', type: 'official_mv', video: mvMatch.best, score: mvMatch.score };
+  const highTierCandidates = rankedMv.filter(
+    (c) => c.score >= 5 && (c.chMatch || c.video.views > 50000)
+  );
+  if (highTierCandidates.length > 0) {
+    const { picked, rejected } = await pickFirstWithMotion(highTierCandidates, durationSec);
+    if (picked) {
+      return { tier: 'high', type: 'official_mv', video: picked.video, score: picked.score, rejectedStatic: rejected };
+    }
+    // All high-tier candidates were static - fall through to medium-tier
+    // ones (still real candidates, just less corroborated) rather than
+    // giving up immediately.
   }
-  if (mvMatch.best && mvMatch.score >= 2) {
-    return { tier: 'medium', type: 'official_mv', video: mvMatch.best, score: mvMatch.score };
+
+  const mediumTierCandidates = rankedMv.filter((c) => c.score >= 2 && !highTierCandidates.includes(c));
+  if (mediumTierCandidates.length > 0) {
+    const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates, durationSec);
+    if (picked) {
+      return { tier: 'medium', type: 'official_mv', video: picked.video, score: picked.score, rejectedStatic: rejected };
+    }
   }
 
   const liveResults = await ytSearch(`${artist} ${trackName} live`);
-  const liveMatch = scoreOfficialLive(liveResults, artist, trackName);
-  if (liveMatch.best && liveMatch.score >= 4) {
-    return { tier: 'medium', type: 'official_live', video: liveMatch.best, score: liveMatch.score };
+  const rankedLive = rankOfficialLive(liveResults, artist, trackName);
+  const liveCandidates = rankedLive.filter((c) => c.score >= 4);
+  if (liveCandidates.length > 0) {
+    const { picked, rejected } = await pickFirstWithMotion(liveCandidates, durationSec);
+    if (picked) {
+      return { tier: 'medium', type: 'official_live', video: picked.video, score: picked.score, rejectedStatic: rejected };
+    }
   }
 
-  return { tier: 'none', type: null, video: null, score: 0 };
+  return { tier: 'none', type: null, video: null, score: 0, rejectedStatic: [] };
 }
 
 function download(videoId, outPathTemplate) {
