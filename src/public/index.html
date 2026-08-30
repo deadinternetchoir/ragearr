@@ -2,18 +2,116 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ragearr</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 4rem auto; padding: 0 1.5rem; color: #222; }
-    h1 { margin-bottom: 0.25rem; }
-    .sub { color: #666; margin-top: 0; }
-    code { background: #f2f2f2; padding: 0.15em 0.4em; border-radius: 4px; }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <h1>Ragearr</h1>
-  <p class="sub">Music video acquisition for your Servarr stack.</p>
-  <p>The web UI (wanted list, review queue) isn't built yet — see <a href="https://github.com/deadinternetchoir/ragearr/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</p>
-  <p>API health check: <code>GET /api/health</code></p>
+  <header class="topbar">
+    <h1>Ragearr</h1>
+    <nav class="tabs">
+      <button class="tab-btn active" data-view="tracks">Tracks</button>
+      <button class="tab-btn" data-view="concerts">Concerts</button>
+      <button class="tab-btn" data-view="settings">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ===== Tracks view ===== -->
+    <section id="view-tracks" class="view active">
+      <div class="panel">
+        <h2>Wanted lists</h2>
+        <div class="row">
+          <select id="wantedListSelect"></select>
+          <button id="newListBtn">+ New list</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Add track</h2>
+        <form id="addTrackForm" class="row wrap">
+          <input name="artist" placeholder="Artist" required />
+          <input name="track_name" placeholder="Track name" required />
+          <input name="album" placeholder="Album (optional)" />
+          <input name="duration_sec" type="number" step="0.1" placeholder="Duration (sec, optional)" />
+          <button type="submit">Add</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Tracks</h2>
+        <table id="tracksTable">
+          <thead>
+            <tr><th>Artist</th><th>Track</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel" id="candidatesPanel" hidden>
+        <h2>Candidates for <span id="candidatesTrackLabel"></span></h2>
+        <table>
+          <thead><tr><th>Tier</th><th>Title</th><th>Channel</th><th>Score</th><th></th></tr></thead>
+          <tbody id="candidatesTableBody"></tbody>
+        </table>
+        <button id="closeCandidatesBtn">Close</button>
+      </div>
+    </section>
+
+    <!-- ===== Concerts view ===== -->
+    <section id="view-concerts" class="view">
+      <div class="panel">
+        <h2>Search concerts</h2>
+        <p class="hint">Full concert/live-show releases via Prowlarr, searched by artist — not per-track. See docs/prowlarr-notes.md for why.</p>
+        <form id="concertSearchForm" class="row">
+          <input name="artist" placeholder="Artist name" required />
+          <button type="submit">Search</button>
+        </form>
+        <p id="concertSearchWarning" class="warning" hidden></p>
+      </div>
+
+      <div class="panel">
+        <table id="concertResultsTable">
+          <thead><tr><th>Title</th><th>Indexer</th><th>Size</th><th>Seeders</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Grabbed</h2>
+        <table id="grabsTable">
+          <thead><tr><th>Artist</th><th>Release</th><th>Status</th><th>When</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== Settings view ===== -->
+    <section id="view-settings" class="view">
+      <div class="panel">
+        <h2>Prowlarr</h2>
+        <form id="prowlarrSettingsForm" class="col">
+          <label>Base URL <input name="baseUrl" placeholder="https://your-prowlarr/prowlarr" /></label>
+          <label>API key <input name="apiKey" placeholder="Leave blank to keep current" /></label>
+          <button type="submit">Save</button>
+        </form>
+        <p class="hint" id="prowlarrCurrentValue"></p>
+      </div>
+
+      <div class="panel">
+        <h2>rTorrent</h2>
+        <p class="hint">Connects over SSH to a local SCGI socket, not a network RPC port — see the module's own comments for why. Needs a dedicated SSH key already added to the target host's <code>authorized_keys</code>.</p>
+        <form id="rtorrentSettingsForm" class="col">
+          <label>Host <input name="host" placeholder="seedbox.example.com" /></label>
+          <label>User <input name="user" placeholder="ssh username" /></label>
+          <label>SSH key path <input name="sshKeyPath" placeholder="/path/to/private_key" /></label>
+          <label>Socket path <input name="socketPath" placeholder="/home/user/.config/rtorrent/socket" /></label>
+          <button type="submit">Save</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
 </body>
 </html>
