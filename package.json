@@ -3,10 +3,32 @@
   "version": "0.1.0",
   "description": "A Servarr-family app for finding, downloading, and organizing music videos.",
   "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deadinternetchoir/ragearr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/deadinternetchoir/ragearr/issues"
+  },
+  "homepage": "https://github.com/deadinternetchoir/ragearr#readme",
+  "keywords": [
+    "servarr",
+    "music-videos",
+    "yt-dlp",
+    "prowlarr",
+    "self-hosted"
+  ],
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node src/server.js"
+    "dev": "node src/server.js",
+    "smoke": "node scripts/smoke-api.js",
+    "test:import-lists": "node scripts/test-import-lists.js",
+    "test:candidate-rules": "node scripts/test-candidate-rules.js",
+    "test:spotify": "node scripts/test-spotify.js",
+    "test:root-folders": "node scripts/test-root-folders.js",
+    "test:backups": "node scripts/test-backups.js",
+    "test:users": "node scripts/test-users.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

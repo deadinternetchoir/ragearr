@@ -1,0 +1,160 @@
+const { execFile } = require('child_process');
+const db = require('../db');
+const settings = require('./settings');
+const prowlarr = require('./prowlarr');
+const downloadClients = require('./downloadClients');
+const notifications = require('./notifications');
+const rootFolders = require('./rootFolders');
+const { sshExec } = require('./sshExec');
+
+const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+
+function check(id, label, status, message, details) {
+  return { id, label, status, message, details: details || null };
+}
+
+function commandVersion(bin, args = ['--version']) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout: 8000, maxBuffer: 256 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr || err.message));
+        return;
+      }
+      resolve(String(stdout || '').split('\n')[0].trim());
+    });
+  });
+}
+
+async function checkCommand(id, label, bin, args) {
+  try {
+    const version = await commandVersion(bin, args);
+    return check(id, label, 'ok', version || `${bin} is available`);
+  } catch (e) {
+    return check(id, label, 'fail', `${bin} is not available: ${e.message}`);
+  }
+}
+
+async function checkProwlarr() {
+  const cfg = settings.get('prowlarr');
+  if (!cfg?.baseUrl || !cfg?.apiKey) return check('prowlarr', 'Prowlarr', 'warn', 'Not configured');
+  try {
+    const client = prowlarr.makeClient(cfg);
+    const status = await client.get('/api/v1/system/status');
+    const version = status?.version ? ` ${status.version}` : '';
+    return check('prowlarr', 'Prowlarr', 'ok', `Reachable${version}`, cfg.baseUrl);
+  } catch (e) {
+    return check('prowlarr', 'Prowlarr', 'fail', e.message, cfg.baseUrl);
+  }
+}
+
+async function checkDownloadClient() {
+  return downloadClients.checkActive();
+}
+
+async function checkLibraryPaths() {
+  const conn = downloadClients.librarySshConn();
+  const lib = rootFolders.getConfig();
+  const paths = [
+    ...lib.musicVideoRootFolders.map((root) => [`Music videos: ${root.name}`, root.path]),
+    ...lib.concertRootFolders.map((root) => [`Concerts: ${root.name}`, root.path]),
+  ];
+
+  if (!conn || paths.length === 0) return check('library_paths', 'Library paths', 'warn', 'Library paths or SSH connection not configured');
+
+  try {
+    const failures = [];
+    for (const [label, remotePath] of paths) {
+      try {
+        await sshExec(conn, `test -d '${remotePath}'`, { timeout: 12000 });
+      } catch (e) {
+        failures.push(`${label}: ${e.message}`);
+      }
+    }
+    if (failures.length > 0) return check('library_paths', 'Library paths', 'fail', failures.join('; '));
+    return check('library_paths', 'Library paths', 'ok', `${paths.length} configured path(s) reachable`);
+  } catch (e) {
+    return check('library_paths', 'Library paths', 'fail', e.message);
+  }
+}
+
+async function checkRemoteFfmpeg() {
+  const conn = downloadClients.librarySshConn();
+  if (!conn) return check('remote_ffmpeg', 'Remote ffmpeg', 'warn', 'SSH connection not configured');
+  try {
+    const version = await sshExec(conn, 'command -v ffmpeg >/dev/null && ffmpeg -version | head -n 1', {
+      timeout: 12000,
+      maxBuffer: 512 * 1024,
+    });
+    return check('remote_ffmpeg', 'Remote ffmpeg', 'ok', version.trim() || 'ffmpeg is available');
+  } catch (e) {
+    return check('remote_ffmpeg', 'Remote ffmpeg', 'fail', e.message);
+  }
+}
+
+function checkSqlite() {
+  try {
+    const quick = db.prepare('PRAGMA quick_check').get();
+    db.exec('CREATE TEMP TABLE IF NOT EXISTS ragearr_healthcheck (id INTEGER); INSERT INTO ragearr_healthcheck (id) VALUES (1); DELETE FROM ragearr_healthcheck;');
+    return check('sqlite', 'SQLite', quick.quick_check === 'ok' ? 'ok' : 'fail', quick.quick_check || 'quick_check returned no result');
+  } catch (e) {
+    return check('sqlite', 'SQLite', 'fail', e.message);
+  }
+}
+
+function checkJobs() {
+  const row = db
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+       FROM jobs`
+    )
+    .get();
+  const running = row.running || 0;
+  const queued = row.queued || 0;
+  const failed = row.failed || 0;
+  if (running || queued) return check('jobs', 'Jobs', 'warn', `${running} running, ${queued} queued, ${failed} failed`);
+  if (failed) return check('jobs', 'Jobs', 'warn', `${failed} failed job(s) in history`);
+  return check('jobs', 'Jobs', 'ok', 'No queued, running, or failed jobs');
+}
+
+async function run({ apiAuthConfigured } = {}) {
+  const results = [];
+  results.push(
+    check(
+      'api_auth',
+      'API authentication',
+      apiAuthConfigured ? 'ok' : 'warn',
+      apiAuthConfigured ? 'RAGEARR_API_KEY is configured' : 'RAGEARR_API_KEY is not set'
+    )
+  );
+  results.push(await checkProwlarr());
+  results.push(await checkDownloadClient());
+  results.push(await checkLibraryPaths());
+  results.push(await checkCommand('yt_dlp', 'yt-dlp', YTDLP));
+  results.push(await checkCommand('ffmpeg', 'Local ffmpeg', FFMPEG, ['-version']));
+  results.push(await checkRemoteFfmpeg());
+  const connect = notifications.publicConfig();
+  results.push(check('connect', 'Connect webhook', connect.configured ? 'ok' : 'warn', connect.configured ? 'Discord webhook configured' : 'No Discord webhook configured'));
+  results.push(checkSqlite());
+  results.push(checkJobs());
+
+  const counts = results.reduce(
+    (acc, item) => {
+      acc[item.status] = (acc[item.status] || 0) + 1;
+      return acc;
+    },
+    { ok: 0, warn: 0, fail: 0 }
+  );
+  const status = counts.fail > 0 ? 'fail' : counts.warn > 0 ? 'warn' : 'ok';
+  return { status, counts, checks: results, checkedAt: new Date().toISOString() };
+}
+
+module.exports = {
+  run,
+  checkProwlarr,
+  checkDownloadClient,
+  checkLibraryPaths,
+};

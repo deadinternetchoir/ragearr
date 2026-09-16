@@ -1,55 +1,141 @@
 # Ragearr
 
-A [Servarr](https://wiki.servarr.com/)-family app for finding, downloading, and organizing **music videos** for your media library — the missing piece next to Sonarr, Radarr, and Lidarr.
+Ragearr is an early-alpha [Servarr](https://wiki.servarr.com/)-family app for finding, downloading, reviewing, and organizing **music videos** for a media library.
 
-Named after [*Rage*](https://en.wikipedia.org/wiki/Rage_(TV_program)), the long-running ABC late-night music video program.
+It is designed for the gap next to Sonarr, Radarr, and Lidarr: one tracked item per song, candidate review before download, quality profiles, monitored/unmonitored state, import lists, manual import, root folders, backup/restore, health checks, and local user auth.
 
-> **Status: early development.** Core matching/download logic has been prototyped and used for real; the Servarr-pattern integration (Prowlarr + download clients) described below is in progress. Contributions and design feedback welcome.
+The name is a nod to the long-running Australian music-video program *Rage*, plus the usual `arr` suffix. Ragearr is not affiliated with ABC or the Servarr projects.
 
-## What it does
+> **Status: alpha.** Ragearr works against a real library, but the project is still young. Expect rough edges, missing integrations, and schema/UI changes. Do not expose it directly to the public internet without a trusted reverse proxy, TLS, and an auth plan.
 
-Two distinct features, deliberately kept separate — see [docs/prowlarr-notes.md](./docs/prowlarr-notes.md) for why:
+## Current Features
 
-**Per-track music videos** (the primary path):
-- Takes a "wanted" list of artist/track pairs (e.g. imported from a Spotify/Apple Music playlist export) and finds a music video for each one.
-- Sourced via YouTube (`yt-dlp`) — validated against a real 148-track playlist and tuned from real false positives (wrong-song matches, lyric videos mislabeled as official, unofficial reuploads). Indexer-based sources (Prowlarr) were tried first and found not to work for this: indexer "Music Video" categories are populated with full concert films, not individual song clips.
-- A review queue for candidates, not full automation — Ragearr surfaces its confidence tier (high/medium/none) and its reasoning; you approve before anything downloads.
-- Imports finished files into your media library folder structure and refreshes **Plex** or **Jellyfin** (pluggable target backend — more targets welcome).
+**Per-track music videos**
+- Import wanted tracks from YouTube playlist URLs, Spotify playlist URLs, Spotify CSV exports, pasted CSV/plain text, or URL-backed CSV/plain text.
+- Preview and de-dupe import lists before writing anything.
+- Search YouTube via `yt-dlp`, score candidates, and show confidence/reasoning before download.
+- Reject common false positives such as lyric videos, visualizers, playthroughs, tutorials, live performances, and low-motion/static-image uploads.
+- Approve candidates into a background download queue instead of blocking the UI.
+- Use quality profiles/cutoffs for `yt-dlp` format selection.
+- Track monitored/unmonitored state.
+- Attach existing files manually, or move/rename them into Ragearr's library layout.
+- Scan one or more library root folders over SSH and import existing files it finds.
+- Show YouTube thumbnails or generated frame thumbnails where available.
 
-**Concerts** (a distinct, artist-level feature):
-- Pulls full concert films / live-show releases through **Prowlarr**, so it inherits whatever indexers you already have configured — same as Sonarr/Radarr/Lidarr.
-- Sends grabs to your existing **download client** (qBittorrent, SABnzbd, rTorrent, etc. — not yet implemented, see CONTRIBUTING.md).
+**Arr-style app features**
+- Local users and 30-day browser sessions.
+- API-key bootstrap/recovery auth.
+- Admin/user roles.
+- Settings pages for Prowlarr, Spotify, download client, library roots, quality profiles, release-profile scoring rules, Connect/Discord notifications, backup/restore, and users.
+- Servarr-style System/Health checks.
+- JSON backup/export/preview/restore for app data. Backups include users, settings, wanted lists, tracks, candidates, concert grabs, and activity history; active sessions and media files are not copied.
+- Non-destructive smoke test and focused parser/settings tests.
 
-## Why not just use Lidarr?
+**Concert releases**
+- Ragearr can search full concert/live-show releases through Prowlarr and dispatch grabs through the active download-client interface.
+- rTorrent over SSH/SCGI is implemented today.
+- Other concrete download clients are not implemented yet.
 
-Considered forking Lidarr (or Radarr — architecturally the closer fit, since its per-item video/quality-profile model matches "one music video file per song" better than Lidarr's audio-album hierarchy) instead of building standalone. Decided against it: this exact feature has been an [open, unresolved Lidarr issue since 2019](https://github.com/lidarr/Lidarr/issues/762), and the one real prior attempt at a companion tool has been abandoned since 2020. Forking and tracking an actively-developed ~300MB C#/.NET codebase is a heavy, ongoing burden for a solo/small effort. Ragearr integrates with the same tools (Prowlarr, download clients) without inheriting that maintenance cost.
+## Quick Start
 
-## Quick start
+```bash
+git clone https://github.com/deadinternetchoir/ragearr.git
+cd ragearr
+cp docker-compose.yml docker-compose.override.yml
+```
+
+Edit `docker-compose.override.yml` for your paths, timezone, and bootstrap key:
+
+```yaml
+services:
+  ragearr:
+    environment:
+      - TZ=Etc/UTC
+      - RAGEARR_API_KEY=replace-with-a-long-random-key
+    volumes:
+      - ./config:/config
+      - /path/to/your/MusicVideos:/musicvideos
+```
+
+Then start it:
 
 ```bash
 docker compose up -d
 ```
 
-See [`docker-compose.yml`](./docker-compose.yml) for configuration. Full setup docs are coming as the Prowlarr/download-client integration lands — see [CONTRIBUTING.md](./CONTRIBUTING.md) if you want to help build it out.
+Open `http://localhost:5299`.
+
+On first use:
+
+1. Sign in with the API key from `RAGEARR_API_KEY`.
+2. Go to **Settings -> Users**.
+3. Create your first admin user.
+4. Log out and sign back in with username/password.
+5. Keep the API key as a recovery credential.
+
+If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the API in bootstrap-admin mode so the first user can be created. This is convenient for local testing, but not recommended for shared networks.
+
+## Configuration Notes
+
+- **Data directory:** `/config` holds SQLite data, settings, generated thumbnails, and app state.
+- **Auth:** API key is accepted via `X-Api-Key`, `Authorization: Bearer <key>`, or `?apikey=...`; user sessions use bearer tokens.
+- **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials.
+- **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
+- **rTorrent:** The included implementation talks to rTorrent over SSH and a local SCGI socket. See `src/services/downloadClients/README.md`.
+- **Library roots:** Configure roots from Settings. They can be local bind-mounted paths or remote paths reachable through the configured SSH/download-client connection.
+- **Security:** Ragearr is alpha software. Put it behind a reverse proxy with TLS and restrict access before exposing it beyond a trusted LAN/VPN.
+
+## Tests
+
+Against a running instance:
+
+```bash
+RAGEARR_BASE_URL=http://127.0.0.1:5299 RAGEARR_API_KEY=your-key npm run smoke
+```
+
+Focused local checks:
+
+```bash
+npm run test:import-lists
+npm run test:candidate-rules
+npm run test:spotify
+npm run test:root-folders
+npm run test:backups
+npm run test:users
+```
 
 ## Architecture
 
 ```
-├── src/
-│   ├── server.js              — app entrypoint
-│   ├── db.js                  — SQLite schema + migrations
-│   ├── routes/                — REST API
-│   ├── services/
-│   │   ├── prowlarr.js        — Concerts feature: indexer search via Prowlarr's API
-│   │   ├── downloadClients/   — rTorrent (via SSH) implemented; qBittorrent/SABnzbd/etc. not yet
-│   │   ├── youtube.js         — primary per-track source + candidate scoring
-│   │   └── mediaServers/
-│   │       ├── plex.js
-│   │       └── jellyfin.js    — target backends, swappable
-│   └── public/                — web UI
-├── Dockerfile
-└── docker-compose.yml
+src/
+  server.js               Express app entrypoint
+  db.js                   SQLite schema and idempotent migrations
+  routes/api.js           REST API
+  services/
+    youtube.js            YouTube search, scoring, static-video checks, downloads
+    importLists.js        YouTube/Spotify/CSV/plain-text import parsing
+    spotify.js            Spotify client-credentials playlist import
+    rootFolders.js        Library root-folder settings normalization
+    backups.js            JSON backup export/preview/restore
+    users.js              Local users, password hashes, and sessions
+    library.js            SSH library scans and manual-import file search
+    notifications.js      Connect/Discord webhook notifications
+    qualityProfiles.js    yt-dlp quality/cutoff profiles
+    candidateRules.js     Release-profile style scoring settings
+    systemHealth.js       Servarr-style health checks
+    thumbnails.js         YouTube thumbnails and generated frame thumbnails
+    downloadClients/      Download-client registry; rTorrent implemented
+  public/                 Vanilla HTML/CSS/JS UI
+scripts/
+  smoke-api.js            Non-destructive API smoke test
+  test-*.js               Focused no-framework regression checks
 ```
+
+## Why Not Just Use Lidarr?
+
+Lidarr tracks music releases and albums. Music videos are a different item model: one video file per song, visual false positives, no reliable music-video-specific torrent category, and a workflow closer to Radarr's per-item review/import shape than Lidarr's album hierarchy.
+
+Ragearr stays small: Node, Express, SQLite, vanilla JS, and the same surrounding tools many Servarr users already run.
 
 ## License
 

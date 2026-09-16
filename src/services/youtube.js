@@ -1,7 +1,7 @@
 // YouTube-based fallback candidate source, using yt-dlp for search and download.
 //
-// This scoring logic has been validated against a real 148-track playlist
-// (117 correctly matched as high-confidence, 28 flagged for review, 3 no-match).
+// This scoring logic has been validated against a real-world playlist with a
+// mix of official videos, false positives, lyric videos, and unavailable tracks.
 // Known gaps, worth fixing:
 //   - Cover songs sometimes match the *original* artist's video instead of the
 //     covering artist's (channel-match gate helps but isn't foolproof — needs
@@ -30,7 +30,18 @@ const path = require('path');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
-const MOTION_CHECK_SCENE_THRESHOLD = 5; // minimum scene changes in the sample to count as "real video"
+// Raised from 5: real reported false negatives (a "marketing image that
+// spins" and a "marketing image with some cuts" both passed as real
+// motion) - the original 5 was validated against only two known cases (one
+// confirmed-static scoring 2, one confirmed-real scoring 34), and a
+// production still image cut between a handful of variants or given a slow
+// pan can plausibly land in that gap without being an actual video. 12 is a
+// reasoned adjustment based on those real failures, not independently
+// re-validated against the specific videos that slipped through (no
+// candidate record survived for them to re-test against) - comfortably
+// above a "a few cuts between stills" scenario while staying well under
+// the one validated real video's 34.
+const MOTION_CHECK_SCENE_THRESHOLD = 12; // minimum scene changes in the sample to count as "real video"
 
 function ytSearch(query, count = 6) {
   return new Promise((resolve) => {
@@ -77,6 +88,16 @@ function coreTrackName(name) {
 }
 
 // Hard gate: does the candidate title actually correspond to this track?
+//
+// Real bug found and fixed: a track name with a repeated word (e.g.
+// "Mercy Mercy") gave the word-overlap fallback below zero discriminating
+// power - both words are literally "mercy", so any candidate containing
+// the single word "mercy" anywhere (including a totally different song,
+// "Herculion - That Mercy") scored a false 100% overlap and was accepted.
+// Deduping the word list before computing the ratio fixes the inflated
+// score; requiring at least 2 *unique* words before trusting the ratio at
+// all closes the same hole for a track name that's just one word long
+// (nothing left to require agreement on).
 function titleMatchesTrack(candidateTitle, trackName) {
   const core = coreTrackName(trackName);
   const nCore = normalize(core);
@@ -84,11 +105,13 @@ function titleMatchesTrack(candidateTitle, trackName) {
   if (!nCore) return false;
   if (nCand.includes(nCore)) return true;
 
-  const words = core
-    .toLowerCase()
-    .split(/[^a-z0-9']+/)
-    .filter((w) => w.length > 2);
-  if (words.length === 0) return nCand.includes(nCore);
+  const words = [...new Set(
+    core
+      .toLowerCase()
+      .split(/[^a-z0-9']+/)
+      .filter((w) => w.length > 2)
+  )];
+  if (words.length < 2) return false; // one/no distinguishing word and no exact substring match above - not enough signal
   let hits = 0;
   for (const w of words) {
     if (nCand.includes(normalize(w))) hits++;
@@ -104,25 +127,122 @@ const EXCLUDE_PHRASES = [
   /\blyric/i,
   /\bcover\b/i,
   /\breaction\b/i,
+  /visuali[sz]er/i,
+  /\btutorial\b/i,
+  /\binterview\b/i,
+  // Real gap found live: "ERRA - echo sonata guitar playthrough | jesse
+  // cash & clint tustin" matched as a medium-tier candidate despite the
+  // earlier /\btutorial\b/ exclusion, since the title says "playthrough"
+  // not "tutorial" - same non-MV category (someone playing along to the
+  // song on camera), different wording. Not blanket-excluding "guitar" on
+  // its own (too broad - a real official title could plausibly contain
+  // that word for an unrelated reason); "playthrough"/"drum cam" are
+  // specific enough phrases to be safe.
+  /play[\s-]?through/i,
+  /\bdrum\s*cam\b/i,
+  // Rule change: no more live-performance substitutes when there's no real
+  // official music video - if nothing but a live/concert recording exists,
+  // findCandidate() should report no match rather than download one. These
+  // titled-as-live results are excluded outright (not just score-penalized
+  // the way rankOfficialMv used to) so one can never surface as a "medium"
+  // match. Known gap, same as everywhere else in this file: a live
+  // recording with no live/concert/festival/session keyword in its own
+  // title (e.g. named only after the venue) won't be caught by this - title
+  // text is the only signal available, there's no reliable way to detect
+  // "this is footage of a live performance" beyond it.
+  /\blive\b/i,
+  /\bconcert\b/i,
+  /\bfestival\b/i,
+  /\bsession\b/i,
 ];
 
-function isExcluded(title) {
-  return EXCLUDE_PHRASES.some((re) => re.test(title));
+// Closes the exact gap the keyword list above can't: a live-recording title
+// with no live/concert/festival/session keyword at all, named only after
+// the venue/city instead (the real example that prompted this - Silverstein
+// "[4K] @ The Wiltern, Los Angeles, 7/21/19" had none of those keywords but
+// is obviously a live show). A city or town name in the title is treated as
+// a reliable-enough signal on its own. Deliberately not exhaustive - a
+// curated list of major touring-circuit cities across the markets this
+// project's own artists actually tour (US/UK/AU/Canada/Europe/major world
+// cities), not a full geographic database. Ambiguous names that double as
+// common English words (Reading, Bath, Mobile...) are deliberately left out
+// - "Reading" would false-positive-exclude any song with the word "reading"
+// in its own title, a worse failure mode than the live shows it would catch.
+// Known remaining risk, accepted rather than guarded against: a track
+// genuinely named after a city (e.g. a song literally called "Chicago" or
+// "London") would have its real official MV wrongly excluded too, since
+// titleMatchesTrack already requires the candidate title to contain the
+// track name - the city name is baked into the title being checked either
+// way. Not worth the added complexity of threading trackName through here
+// just to special-case it unless it turns out to bite a real track.
+const CITY_NAMES = [
+  // US
+  'New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'Philadelphia',
+  'San Antonio', 'San Diego', 'Dallas', 'Austin', 'San Francisco', 'Seattle',
+  'Denver', 'Boston', 'Nashville', 'Detroit', 'Portland', 'Las Vegas',
+  'Milwaukee', 'Albuquerque', 'Atlanta', 'Miami', 'Minneapolis', 'Cleveland',
+  'New Orleans', 'Tampa', 'Pittsburgh', 'Cincinnati', 'Orlando', 'St Louis',
+  'Kansas City', 'Sacramento', 'San Jose', 'Indianapolis', 'Columbus',
+  'Charlotte', 'Baltimore', 'Memphis', 'Louisville', 'Oklahoma City',
+  'Anaheim', 'Fort Worth', 'El Paso',
+  // UK / Ireland
+  'London', 'Manchester', 'Birmingham', 'Glasgow', 'Liverpool', 'Leeds',
+  'Sheffield', 'Bristol', 'Edinburgh', 'Cardiff', 'Belfast', 'Newcastle',
+  'Nottingham', 'Southampton', 'Brighton', 'Dublin', 'Cork',
+  // Australia / NZ
+  'Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Adelaide', 'Canberra',
+  'Hobart', 'Wollongong', 'Newcastle', 'Auckland', 'Wellington',
+  // Canada
+  'Toronto', 'Vancouver', 'Montreal', 'Calgary', 'Ottawa', 'Edmonton',
+  'Winnipeg', 'Quebec City',
+  // Europe
+  'Paris', 'Berlin', 'Munich', 'Hamburg', 'Cologne', 'Frankfurt', 'Madrid',
+  'Barcelona', 'Rome', 'Milan', 'Amsterdam', 'Rotterdam', 'Brussels',
+  'Vienna', 'Zurich', 'Geneva', 'Stockholm', 'Oslo', 'Copenhagen',
+  'Helsinki', 'Warsaw', 'Prague', 'Budapest', 'Lisbon', 'Athens', 'Moscow',
+  // Other major touring markets
+  'Tokyo', 'Osaka', 'Seoul', 'Mexico City', 'Sao Paulo', 'Rio de Janeiro',
+  'Johannesburg', 'Cape Town', 'Singapore',
+];
+const CITY_NAME_RE = new RegExp(
+  `\\b(${CITY_NAMES.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+  'i'
+);
+
+function phraseMatches(title, phrase) {
+  if (!phrase) return false;
+  return String(title || '').toLowerCase().includes(String(phrase).toLowerCase());
+}
+
+function isExcluded(title, rules = {}) {
+  return EXCLUDE_PHRASES.some((re) => re.test(title)) ||
+    CITY_NAME_RE.test(title) ||
+    (rules.excludedPhrases || []).some((phrase) => phraseMatches(title, phrase));
+}
+
+function customRuleScore(title, rules = {}) {
+  let score = 0;
+  for (const phrase of rules.preferredPhrases || []) {
+    if (phraseMatches(title, phrase)) score += Number(rules.preferredScore ?? 1);
+  }
+  for (const phrase of rules.penalizedPhrases || []) {
+    if (phraseMatches(title, phrase)) score += Number(rules.penaltyScore ?? -2);
+  }
+  return score;
 }
 
 // Returns every plausible candidate ranked best-first (not just the top one),
 // so findCandidate() can fall through to the next-best if the top pick turns
 // out to be a static image (see hasMotion() below).
-function rankOfficialMv(results, artist, trackName, trackDurationSec) {
+function rankOfficialMv(results, artist, trackName, trackDurationSec, rules = {}) {
   const ranked = [];
   for (const r of results) {
     if (!r.title || !r.channel) continue;
-    if (isExcluded(r.title)) continue;
+    if (isExcluded(r.title, rules)) continue; // live/concert/festival/session titles excluded here, see EXCLUDE_PHRASES
     if (!titleMatchesTrack(r.title, trackName)) continue;
     const titleLower = r.title.toLowerCase();
     let score = 0;
     const isOfficialTag = /official\s*(music\s*)?video/.test(titleLower);
-    const isLive = /\blive\b|\bconcert\b/.test(titleLower);
     const chMatch = channelMatchesArtist(r.channel, artist);
     if (isOfficialTag) score += 3;
     if (chMatch) score += 3;
@@ -132,25 +252,7 @@ function rankOfficialMv(results, artist, trackName, trackDurationSec) {
       else if (diff < 40) score += 1;
       else if (diff > 90) score -= 2;
     }
-    if (isLive) score -= 1;
-    ranked.push({ video: r, score, chMatch });
-  }
-  ranked.sort((a, b) => b.score - a.score);
-  return ranked;
-}
-
-function rankOfficialLive(results, artist, trackName) {
-  const ranked = [];
-  for (const r of results) {
-    if (!r.title || !r.channel) continue;
-    if (isExcluded(r.title)) continue;
-    if (!titleMatchesTrack(r.title, trackName)) continue;
-    const titleLower = r.title.toLowerCase();
-    const isLive = /\blive\b|\bconcert\b|\bfestival\b|\bsession\b/.test(titleLower);
-    const chMatch = channelMatchesArtist(r.channel, artist);
-    if (!chMatch) continue; // only trust official-channel live performances
-    let score = 2; // baseline for channel match
-    if (isLive) score += 3;
+    score += customRuleScore(r.title, rules);
     ranked.push({ video: r, score, chMatch });
   }
   ranked.sort((a, b) => b.score - a.score);
@@ -294,17 +396,28 @@ async function pickFirstWithMotion(ranked) {
 
 /**
  * Find a music video candidate for a track. Returns
- * { tier: 'high'|'medium'|'none', type: 'official_mv'|'official_live'|null,
- *   video, score, rejectedStatic }
+ * { tier: 'high'|'medium'|'none', type: 'official_mv'|null, video, score,
+ *   rejectedStatic }
  * rejectedStatic lists any candidate video IDs that scored well but were
  * rejected by the motion check (static image / slow-pan) before this pick.
+ *
+ * No live-performance fallback: if nothing but a live/concert/festival/
+ * session recording exists for a track, this reports 'none' rather than
+ * downloading one - a live video is never an acceptable substitute for a
+ * real official music video, per an explicit rule change. There used to be
+ * a second search pass here for exactly that fallback (rankOfficialLive,
+ * type: 'official_live') - removed entirely, not just disabled, since
+ * nothing else in the codebase referenced that type.
  */
-async function findCandidate({ artist, trackName, durationSec }) {
+async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
   const mvResults = await ytSearch(`${artist} ${trackName} official music video`);
-  const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec);
+  const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec, rules);
+  const highTierScore = Number(rules.highTierScore ?? 5);
+  const mediumTierScore = Number(rules.mediumTierScore ?? 2);
+  const minFallbackViews = Number(rules.minFallbackViews ?? 50000);
 
   const highTierCandidates = rankedMv.filter(
-    (c) => c.score >= 5 && (c.chMatch || c.video.views > 50000)
+    (c) => c.score >= highTierScore && (c.chMatch || c.video.views > minFallbackViews)
   );
   if (highTierCandidates.length > 0) {
     const { picked, rejected } = await pickFirstWithMotion(highTierCandidates);
@@ -316,7 +429,18 @@ async function findCandidate({ artist, trackName, durationSec }) {
     // giving up immediately.
   }
 
-  const mediumTierCandidates = rankedMv.filter((c) => c.score >= 2 && !highTierCandidates.includes(c));
+  // Real bug found and fixed: medium tier used to have NO artist
+  // corroboration requirement at all - only the (already-loosened) title
+  // word-overlap check above. That's how "Silverstein - Mercy Mercy"
+  // matched "Herculion - That Mercy [Official Music Video]": completely
+  // unrelated band and song, title-only score of 5 (official tag + a
+  // duration coincidence) with chMatch false and low view count. Medium
+  // tier now requires the same real signal high tier already does - some
+  // corroboration that the video is actually associated with the artist,
+  // not just a title that happens to score well.
+  const mediumTierCandidates = rankedMv.filter(
+    (c) => c.score >= mediumTierScore && !highTierCandidates.includes(c) && (c.chMatch || c.video.views > minFallbackViews)
+  );
   if (mediumTierCandidates.length > 0) {
     const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates);
     if (picked) {
@@ -324,27 +448,18 @@ async function findCandidate({ artist, trackName, durationSec }) {
     }
   }
 
-  const liveResults = await ytSearch(`${artist} ${trackName} live`);
-  const rankedLive = rankOfficialLive(liveResults, artist, trackName);
-  const liveCandidates = rankedLive.filter((c) => c.score >= 4);
-  if (liveCandidates.length > 0) {
-    const { picked, rejected } = await pickFirstWithMotion(liveCandidates);
-    if (picked) {
-      return { tier: 'medium', type: 'official_live', video: picked.video, score: picked.score, rejectedStatic: rejected };
-    }
-  }
-
   return { tier: 'none', type: null, video: null, score: 0, rejectedStatic: [] };
 }
 
-function download(videoId, outPathTemplate) {
+function download(videoId, outPathTemplate, qualityProfile) {
+  const format = qualityProfile?.ytdlpFormat || 'bestvideo[vcodec!*=av01][height<=1080]+bestaudio/best[height<=1080]/best';
   return new Promise((resolve) => {
     execFile(
       YTDLP,
       [
         // AV1 excluded deliberately: no released NVIDIA Shield TV model has
         // hardware AV1 decode, and software decode at 4K isn't viable there.
-        '-f', 'bestvideo[vcodec!*=av01]+bestaudio/best',
+        '-f', format,
         '--merge-output-format', 'mkv',
         '--no-progress',
         '-o', outPathTemplate,
@@ -358,4 +473,4 @@ function download(videoId, outPathTemplate) {
   });
 }
 
-module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist };
+module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv };

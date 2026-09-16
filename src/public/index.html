@@ -9,12 +9,17 @@
 <body>
   <div class="page">
     <nav class="sidebar">
-      <div class="sidebar-brand"><span class="accent-dot">&#9679;</span>&nbsp;Ragearr</div>
+      <div class="sidebar-brand">
+        <span class="wordmark"><span>Rage</span><span class="arr">arr</span></span>
+      </div>
       <div class="sidebar-item active" data-view="tracks">
         <a href="#"><span class="icon">&#9835;</span>Tracks</a>
       </div>
       <div class="sidebar-item" data-view="concerts">
         <a href="#"><span class="icon">&#9658;</span>Concerts</a>
+      </div>
+      <div class="sidebar-item" data-view="activity">
+        <a href="#"><span class="icon">&#8634;</span>Activity</a>
       </div>
       <div class="sidebar-item" data-view="settings">
         <a href="#"><span class="icon">&#9881;</span>Settings</a>
@@ -22,17 +27,50 @@
     </nav>
 
     <div class="page-content">
-      <header class="page-header"><span id="pageTitle">Tracks</span></header>
+      <header class="page-header">
+        <span id="pageTitle">Tracks</span>
+        <div class="user-chip" id="userChip" hidden>
+          <span id="currentUserLabel"></span>
+          <button type="button" class="secondary compact" id="logoutBtn">Logout</button>
+        </div>
+      </header>
 
       <main>
         <!-- ===== Tracks view ===== -->
         <section id="view-tracks" class="view active">
-          <div class="card">
-            <h2>Wanted lists</h2>
-            <div class="row">
-              <select id="wantedListSelect"></select>
-              <button id="newListBtn" class="secondary">+ New list</button>
+          <div class="stats-strip" id="tracksStats">
+            <div class="stat-tile">
+              <span class="stat-value" id="statTotal">0</span>
+              <span class="stat-label">Tracks</span>
             </div>
+            <div class="stat-tile">
+              <span class="stat-value" id="statMissing">0</span>
+              <span class="stat-label">Missing</span>
+            </div>
+            <div class="stat-tile">
+              <span class="stat-value" id="statHave">0</span>
+              <span class="stat-label">Have</span>
+            </div>
+            <div class="stat-tile">
+              <span class="stat-value" id="statUnmonitored">0</span>
+              <span class="stat-label">Unmonitored</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="arr-toolbar">
+              <select id="wantedListSelect"></select>
+              <input type="search" id="tracksFilterInput" placeholder="Filter by artist or track…" />
+              <select id="tracksStatusFilter">
+                <option value="">All statuses</option>
+                <option value="missing">Missing</option>
+                <option value="have">Have</option>
+                <option value="unmonitored">Unmonitored</option>
+              </select>
+              <button id="scanLibraryBtn" class="secondary">Scan library</button>
+              <button id="newListBtn" class="secondary">New list</button>
+            </div>
+            <p class="hint" id="scanLibraryResult" hidden></p>
           </div>
 
           <div class="card">
@@ -42,27 +80,50 @@
               <input name="track_name" placeholder="Track name" required />
               <input name="album" placeholder="Album (optional)" />
               <input name="duration_sec" type="number" step="0.1" placeholder="Duration (sec, optional)" />
+              <select name="quality_profile" id="addTrackQualityProfile"></select>
+              <label class="inline-check"><input name="monitored" type="checkbox" checked /> Monitored</label>
               <button type="submit">Add</button>
             </form>
           </div>
 
           <div class="card">
-            <h2>Tracks</h2>
-            <table id="tracksTable">
-              <thead>
-                <tr><th>Artist</th><th>Track</th><th>Status</th><th>Actions</th></tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+            <h2>Import list</h2>
+            <form id="importListForm" class="col wide-col">
+              <label>List name <input name="name" placeholder="Playlist, CSV, or source name" /></label>
+              <label>URL <input name="url" placeholder="YouTube/Spotify playlist or CSV/plain-text URL" /></label>
+              <label>Pasted list <textarea name="text" rows="5" placeholder="artist, track name, album, duration&#10;Silverstein, Drain The Blood"></textarea></label>
+              <div class="row">
+                <button type="submit">Preview</button>
+                <button type="button" class="secondary" id="importListSubmitBtn" disabled>Import</button>
+              </div>
+            </form>
+            <div id="importListSummary" class="hint"></div>
+            <div id="importListPreview" class="import-preview"></div>
           </div>
 
-          <div class="card" id="candidatesPanel" hidden>
-            <h2>Candidates for <span id="candidatesTrackLabel"></span></h2>
-            <table>
-              <thead><tr><th>Tier</th><th>Title</th><th>Channel</th><th>Score</th><th></th></tr></thead>
-              <tbody id="candidatesTableBody"></tbody>
-            </table>
-            <button id="closeCandidatesBtn" class="secondary">Close</button>
+          <div class="card">
+            <div class="section-heading">
+              <h2>Library</h2>
+              <span class="hint" id="tracksResultCount"></span>
+            </div>
+            <div class="table-scroll">
+              <table class="arr-table">
+                <thead>
+                  <tr>
+                    <th class="monitor-col" title="Monitored">Mon.</th>
+                    <th class="art-col">Art</th>
+                    <th class="artist-col">Artist</th>
+                    <th class="title-col">Track</th>
+                    <th class="status-col">Status</th>
+                    <th class="quality-col">Quality</th>
+                    <th class="file-col">File</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tracksTableBody"></tbody>
+              </table>
+            </div>
+            <p class="hint" id="tracksEmptyHint" hidden>No tracks match.</p>
           </div>
         </section>
 
@@ -79,47 +140,188 @@
           </div>
 
           <div class="card">
-            <table id="concertResultsTable">
-              <thead><tr><th>Title</th><th>Indexer</th><th>Size</th><th>Seeders</th><th></th></tr></thead>
-              <tbody></tbody>
-            </table>
+            <div id="concertResultsGrid" class="card-grid"></div>
           </div>
 
           <div class="card">
-            <h2>Grabbed</h2>
-            <table id="grabsTable">
-              <thead><tr><th>Artist</th><th>Release</th><th>Status</th><th>When</th></tr></thead>
-              <tbody></tbody>
-            </table>
+            <div class="row wrap">
+              <h2 style="margin:0;flex:1 0 auto;">Grabbed</h2>
+              <button id="scanConcertsLibraryBtn" class="secondary">Scan library</button>
+            </div>
+            <p class="hint" id="scanConcertsLibraryResult" hidden></p>
+            <div id="grabsGrid" class="card-grid"></div>
+          </div>
+        </section>
+
+        <!-- ===== Activity view ===== -->
+        <section id="view-activity" class="view">
+          <div class="card">
+            <div class="row wrap toolbar">
+              <h2 style="margin:0;">Queue &amp; history</h2>
+              <span class="hint" style="margin:0;">Refreshes every 3s while this tab is open.</span>
+            </div>
+            <div id="activityList"></div>
+            <p class="hint" id="activityEmptyHint" hidden>Nothing has run yet — search and select a candidate on the Tracks tab to see it here.</p>
           </div>
         </section>
 
         <!-- ===== Settings view ===== -->
         <section id="view-settings" class="view">
           <div class="card">
+            <div class="section-head">
+              <h2>System</h2>
+              <button id="refreshHealthBtn" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="healthSummary" class="health-summary"></div>
+            <div id="healthList" class="health-list"></div>
+          </div>
+
+          <div class="card">
+            <h2>Users</h2>
+            <form id="createUserForm" class="col">
+              <div class="settings-grid">
+                <label>Username <input name="username" autocomplete="username" /></label>
+                <label>Role <select name="role"><option value="user">User</option><option value="admin">Admin</option></select></label>
+              </div>
+              <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="At least 8 characters" /></label>
+              <button type="submit">Create user</button>
+            </form>
+            <div id="usersList" class="connection-detail"></div>
+          </div>
+
+          <div class="card">
+            <h2>Quality</h2>
+            <form id="qualitySettingsForm" class="col">
+              <label>Default quality profile <select name="defaultProfileId" id="defaultQualityProfileSelect"></select></label>
+              <button type="submit">Save</button>
+            </form>
+            <p class="hint" id="qualityCurrentValue"></p>
+          </div>
+
+          <div class="card">
+            <h2>Release profile</h2>
+            <form id="candidateRulesForm" class="col">
+              <label>Preferred title phrases <textarea name="preferredPhrases" rows="3" placeholder="official music video&#10;official video"></textarea></label>
+              <label>Penalized title phrases <textarea name="penalizedPhrases" rows="3" placeholder="fan made&#10;behind the scenes"></textarea></label>
+              <label>Excluded title phrases <textarea name="excludedPhrases" rows="3" placeholder="remix&#10;trailer"></textarea></label>
+              <div class="settings-grid">
+                <label>Preferred score <input name="preferredScore" type="number" step="1" /></label>
+                <label>Penalty score <input name="penaltyScore" type="number" step="1" /></label>
+                <label>High tier score <input name="highTierScore" type="number" step="1" /></label>
+                <label>Medium tier score <input name="mediumTierScore" type="number" step="1" /></label>
+                <label>Fallback views <input name="minFallbackViews" type="number" step="1000" /></label>
+              </div>
+              <button type="submit">Save</button>
+            </form>
+            <p class="hint" id="candidateRulesCurrentValue"></p>
+          </div>
+
+          <div class="card">
             <h2>Prowlarr</h2>
             <form id="prowlarrSettingsForm" class="col">
               <label>Base URL <input name="baseUrl" placeholder="https://your-prowlarr/prowlarr" /></label>
               <label>API key <input name="apiKey" placeholder="Leave blank to keep current" /></label>
-              <button type="submit">Save</button>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testProwlarrBtn">Test</button>
+              </div>
             </form>
             <p class="hint" id="prowlarrCurrentValue"></p>
+            <div id="prowlarrTestResult" class="connection-test" hidden></div>
           </div>
 
           <div class="card">
-            <h2>rTorrent</h2>
-            <p class="hint">Connects over SSH to a local SCGI socket, not a network RPC port — see the module's own comments for why. Needs a dedicated SSH key already added to the target host's <code>authorized_keys</code>.</p>
-            <form id="rtorrentSettingsForm" class="col">
+            <h2>Spotify</h2>
+            <form id="spotifySettingsForm" class="col">
+              <label>Client ID <input name="clientId" autocomplete="off" /></label>
+              <label>Client secret <input name="clientSecret" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" /></label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testSpotifyBtn">Test</button>
+              </div>
+            </form>
+            <p class="hint" id="spotifyCurrentValue"></p>
+            <div id="spotifyTestResult" class="connection-test" hidden></div>
+          </div>
+
+          <div class="card">
+            <h2>Connect</h2>
+            <form id="notificationsSettingsForm" class="col">
+              <label>Discord webhook <input name="discordWebhookUrl" placeholder="Leave blank to keep current" /></label>
+              <label class="inline-check"><input name="onCandidateFound" type="checkbox" /> Candidate found</label>
+              <label class="inline-check"><input name="onNoMatch" type="checkbox" /> No match found</label>
+              <label class="inline-check"><input name="onDownloadImported" type="checkbox" /> Download imported</label>
+              <label class="inline-check"><input name="onDownloadFailed" type="checkbox" /> Download failed</label>
+              <label class="inline-check"><input name="onLibraryScan" type="checkbox" /> Library scan complete</label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testNotificationBtn">Test</button>
+              </div>
+            </form>
+            <p class="hint" id="notificationsCurrentValue"></p>
+          </div>
+
+          <div class="card">
+            <h2>Download client</h2>
+            <p class="hint">Concert grabs dispatch through the active download client. rTorrent connects over SSH to a local SCGI socket; other client types can be added behind this same interface.</p>
+            <form id="downloadClientSettingsForm" class="col">
+              <label>Client type <select name="type" id="downloadClientTypeSelect"></select></label>
               <label>Host <input name="host" placeholder="seedbox.example.com" /></label>
               <label>User <input name="user" placeholder="ssh username" /></label>
               <label>SSH key path <input name="sshKeyPath" placeholder="/path/to/private_key" /></label>
               <label>Socket path <input name="socketPath" placeholder="/home/user/.config/rtorrent/socket" /></label>
-              <button type="submit">Save</button>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testDownloadClientBtn">Test</button>
+              </div>
             </form>
+            <div id="downloadClientTestResult" class="connection-test" hidden></div>
+          </div>
+
+          <div class="card">
+            <h2>Library</h2>
+            <p class="hint">Root folders scanned over the active download client's SSH connection. Use one folder per line; optionally write "Name | /path". The first music-video root is used for new downloads.</p>
+            <form id="librarySettingsForm" class="col">
+              <label>Music video root folders <textarea name="musicVideoRootFolders" rows="4" placeholder="Music Videos | /home/user/media/MusicVideos"></textarea></label>
+              <label>Concert root folders <textarea name="concertRootFolders" rows="3" placeholder="Concerts | /home/user/media/Concerts"></textarea></label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testLibraryBtn">Test</button>
+              </div>
+            </form>
+            <div id="libraryTestResult" class="connection-test" hidden></div>
+          </div>
+
+          <div class="card">
+            <h2>Backup &amp; restore</h2>
+            <p class="hint">Exports and restores Ragearr's application database: settings, wanted lists, tracks, candidates, concert grabs, and activity history. Media files on disk are not copied.</p>
+            <div class="row wrap">
+              <button type="button" id="exportBackupBtn">Export backup</button>
+              <label class="file-picker">Restore file <input type="file" id="restoreBackupFile" accept="application/json,.json" /></label>
+            </div>
+            <div id="backupSummary" class="connection-test" hidden></div>
+            <div class="row" id="restoreBackupActions" hidden>
+              <button type="button" class="danger" id="restoreBackupBtn">Restore selected backup</button>
+            </div>
           </div>
         </section>
       </main>
     </div>
+  </div>
+
+  <div class="auth-modal" id="apiKeyModal" hidden>
+    <form class="auth-dialog" id="apiKeyForm">
+      <h2>Sign in to Ragearr</h2>
+      <p class="hint">Use a Ragearr user account, or the container API key for admin/recovery access.</p>
+      <label>Username <input id="loginUsernameInput" name="username" autocomplete="username" /></label>
+      <label>Password <input id="loginPasswordInput" name="password" type="password" autocomplete="current-password" /></label>
+      <label>API key <input id="apiKeyInput" name="apiKey" type="password" autocomplete="current-password" placeholder="Optional admin fallback" /></label>
+      <p class="warning" id="apiKeyError" hidden></p>
+      <div class="row">
+        <button type="submit">Sign in</button>
+        <button type="button" class="secondary" id="apiKeyCancelBtn">Cancel</button>
+      </div>
+    </form>
   </div>
 
   <script src="app.js"></script>
