@@ -3,10 +3,19 @@
 Each client should export a common interface:
 
 ```js
+async function getVersion() { /* optional display/test helper */ }
 async function addByUrl(url) { /* add a torrent/release */ }
 async function listTorrents(fields) { /* current state */ }
 async function remove(id, { deleteFiles }) {}
 ```
+
+`index.js` is the registry/facade used by the API, System/Health, and Settings UI. Register new clients there with:
+
+- `id`, `name`, and `requiredFields`
+- `makeClient(config)` returning the interface above
+- `publicConfig(config)` for safe settings round-trips
+- optional `check(config)` for health/test behavior
+- optional `librarySshConn(config)` only if that client also supplies the SSH connection Ragearr can use for library scans and remote thumbnail generation
 
 ## rTorrent (`rtorrent.js`) — implemented
 

@@ -5,9 +5,15 @@ services:
     ports:
       - "5299:5299"
     volumes:
+      # SQLite database, settings, generated thumbnails, and app state.
       - ./config:/config
-      # Mount your music video library path so imports land in the right place
+      # Optional for local-library installs. Remote SSH library roots can also
+      # be configured from Settings without bind-mounting media into the app.
       - /path/to/your/MusicVideos:/musicvideos
     environment:
       - TZ=Etc/UTC
+      # Strongly recommended before exposing the app to any other machine.
+      # Use this once as an admin bootstrap/recovery key, then create a local
+      # admin user from Settings -> Users and sign in with username/password.
+      # - RAGEARR_API_KEY=change-me
     restart: unless-stopped
