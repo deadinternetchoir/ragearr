@@ -380,6 +380,7 @@ main { flex: 1; padding: 22px 26px; width: 100%; }
 .col { display: flex; flex-direction: column; gap: 10px; max-width: 480px; }
 .wide-col { max-width: 760px; }
 .col label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--dim-color); }
+.client-fields { display: flex; flex-direction: column; gap: 10px; }
 .inline-check {
   display: inline-flex;
   align-items: center;

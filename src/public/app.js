@@ -1219,12 +1219,28 @@ document.getElementById('downloadClientSettingsForm').addEventListener('submit',
     user: form.user.value.trim(),
     sshKeyPath: form.sshKeyPath.value.trim(),
     socketPath: form.socketPath.value.trim(),
+    baseUrl: form.baseUrl.value.trim(),
+    username: form.username.value.trim(),
+    password: form.password.value,
+    category: form.category.value.trim(),
+    savePath: form.savePath.value.trim(),
   });
+  form.password.value = '';
   alert('Saved.');
 });
 
 document.getElementById('testDownloadClientBtn').addEventListener('click', () => {
   runConnectionTest('testDownloadClientBtn', 'downloadClientTestResult', '/settings/download-client/test');
+});
+
+function renderDownloadClientFields(type) {
+  document.querySelectorAll('[data-client-fields]').forEach((group) => {
+    group.hidden = group.dataset.clientFields !== type;
+  });
+}
+
+document.getElementById('downloadClientTypeSelect').addEventListener('change', (e) => {
+  renderDownloadClientFields(e.target.value);
 });
 
 async function loadDownloadClientSettings() {
@@ -1236,10 +1252,17 @@ async function loadDownloadClientSettings() {
     select.appendChild(el('option', { value: type.id }, document.createTextNode(type.name)));
   }
   select.value = cfg.type || 'rtorrent';
-  if (cfg.host) form.host.value = cfg.host;
-  if (cfg.user) form.user.value = cfg.user;
-  if (cfg.sshKeyPath) form.sshKeyPath.value = cfg.sshKeyPath;
-  if (cfg.socketPath) form.socketPath.value = cfg.socketPath;
+  renderDownloadClientFields(select.value);
+  form.host.value = cfg.host || '';
+  form.user.value = cfg.user || '';
+  form.sshKeyPath.value = cfg.sshKeyPath || '';
+  form.socketPath.value = cfg.socketPath || '';
+  form.baseUrl.value = cfg.baseUrl || '';
+  form.username.value = cfg.username || '';
+  form.password.value = '';
+  form.password.placeholder = cfg.passwordConfigured ? 'Configured - leave blank to keep current' : 'Leave blank to keep current';
+  form.category.value = cfg.category || '';
+  form.savePath.value = cfg.savePath || '';
 }
 
 function fillQualitySelect(select, selectedId) {

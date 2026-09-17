@@ -4,7 +4,7 @@ Ragearr is early-alpha software. Small, focused PRs are much more useful than la
 
 ## Useful Areas
 
-- **Download clients** (`src/services/downloadClients/`) — rTorrent over SSH/SCGI is implemented. qBittorrent, Transmission, Deluge, SABnzbd, and NZBGet are open.
+- **Download clients** (`src/services/downloadClients/`) — rTorrent over SSH/SCGI and qBittorrent WebUI are implemented. Transmission, Deluge, SABnzbd, and NZBGet are open.
 - **Candidate scoring** (`src/services/youtube.js`, `src/services/candidateRules.js`) — improve false-positive handling for music-video search while keeping the review-first workflow.
 - **Import sources** (`src/services/importLists.js`, `src/services/spotify.js`) — more playlist/export formats and better edge-case parsing.
 - **Installer/docs polish** — clearer examples for Docker, reverse proxies, first-run auth, and real-world library layouts.
@@ -32,6 +32,7 @@ npm run test:spotify
 npm run test:root-folders
 npm run test:backups
 npm run test:users
+npm run test:download-clients
 ```
 
 Smoke test against a running instance:

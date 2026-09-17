@@ -1,5 +1,6 @@
 const settings = require('../settings');
 const rtorrent = require('./rtorrent');
+const qbittorrent = require('./qbittorrent');
 const { sshExec } = require('../sshExec');
 
 const DEFAULT_TYPE = 'rtorrent';
@@ -31,6 +32,40 @@ const TYPES = {
       const conn = this.librarySshConn(cfg);
       await sshExec(conn, `test -S '${cfg.socketPath}' && echo ok`, { timeout: 12000 });
       return { message: 'SSH reachable and socket exists', details: this.connectionDetails(cfg) };
+    },
+  },
+  qbittorrent: {
+    id: 'qbittorrent',
+    name: 'qBittorrent',
+    configKey: 'qbittorrent',
+    requiredFields: ['baseUrl', 'username', 'password'],
+    makeClient: qbittorrent.makeClient,
+    storageConfig(cfg, current = {}) {
+      return {
+        baseUrl: String(cfg.baseUrl || '').replace(/\/+$/, ''),
+        username: cfg.username || '',
+        password: cfg.password || current.password || '',
+        category: cfg.category || '',
+        savePath: cfg.savePath || '',
+      };
+    },
+    publicConfig(cfg) {
+      return {
+        type: 'qbittorrent',
+        baseUrl: cfg.baseUrl || '',
+        username: cfg.username || '',
+        passwordConfigured: Boolean(cfg.password),
+        category: cfg.category || '',
+        savePath: cfg.savePath || '',
+      };
+    },
+    connectionDetails(cfg) {
+      return cfg.baseUrl || null;
+    },
+    async check(cfg) {
+      const client = this.makeClient(cfg);
+      const version = await client.getVersion();
+      return { message: `Reachable${version ? ` ${version}` : ''}`, details: this.connectionDetails(cfg) };
     },
   },
 };
@@ -70,10 +105,12 @@ function publicConfig(type = activeType()) {
 function setConfig(type, cfg) {
   const spec = TYPES[type];
   if (!spec) throw new Error(`unsupported download client type: ${type}`);
-  const missing = spec.requiredFields.filter((field) => !cfg?.[field]);
+  const current = settings.get(spec.configKey) || {};
+  const next = spec.storageConfig ? spec.storageConfig(cfg || {}, current) : spec.publicConfig(cfg || {});
+  const missing = spec.requiredFields.filter((field) => !next?.[field]);
   if (missing.length) throw new Error(`${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required`);
   settings.set('downloadClient', { type });
-  settings.set(spec.configKey, spec.publicConfig(cfg));
+  settings.set(spec.configKey, next);
 }
 
 function makeClient(type = activeType()) {

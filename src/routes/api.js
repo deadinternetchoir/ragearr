@@ -808,9 +808,20 @@ router.get('/settings/download-client', (req, res) => {
 });
 
 router.put('/settings/download-client', (req, res) => {
-  const { type = 'rtorrent', host, user, sshKeyPath, socketPath } = req.body;
+  const {
+    type = 'rtorrent',
+    host,
+    user,
+    sshKeyPath,
+    socketPath,
+    baseUrl,
+    username,
+    password,
+    category,
+    savePath,
+  } = req.body || {};
   try {
-    downloadClients.setConfig(type, { host, user, sshKeyPath, socketPath });
+    downloadClients.setConfig(type, { host, user, sshKeyPath, socketPath, baseUrl, username, password, category, savePath });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -843,7 +854,7 @@ router.post('/settings/download-client/test', async (req, res) => {
 });
 
 // Grabbing a concert release actually dispatches it to the active download
-// client (currently rTorrent). Uses the release's
+// client. Uses the release's
 // downloadUrl from a Prowlarr search result - Prowlarr proxies the real
 // .torrent file through itself, so this URL can be handed to the configured
 // client regardless of which underlying indexer it came from.

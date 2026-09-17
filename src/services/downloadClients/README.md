@@ -23,6 +23,12 @@ Talks to rTorrent over **SSH**, not a network RPC port. rTorrent's own control i
 
 Setup: generate a dedicated SSH keypair, add its public key to the target host's `authorized_keys`, configure `host`/`user`/`sshKeyPath`/`socketPath` when constructing the client. See `docs/prowlarr-notes.md`-adjacent reasoning in the module's own header comment for the full "why."
 
+## qBittorrent (`qbittorrent.js`) — implemented
+
+Talks to qBittorrent's WebUI API over HTTP(S). Configure `baseUrl`, `username`, `password`, and optionally `category` / `savePath`. The client logs in through `/api/v2/auth/login`, keeps the returned SID cookie in memory, checks `/api/v2/app/version`, and adds releases via `/api/v2/torrents/add`.
+
+qBittorrent is suitable for Prowlarr concert grabs. It does **not** provide an SSH connection for Ragearr's remote library scan, frame-thumbnail generation, or music-video import/upload path; those still need an SSH-capable setup such as rTorrent's configured host/key or a future dedicated library-SSH setting.
+
 ## Not yet implemented
 
-qBittorrent, SABnzbd, Transmission, Deluge, NZBGet — these typically do have real network-reachable APIs (unlike this rTorrent setup), so they likely don't need the SSH approach at all. Worth checking the specific target's actual reachability before assuming a network API call will work, the way `rtorrent.js`'s header comment documents doing for this one.
+SABnzbd, Transmission, Deluge, NZBGet — these typically do have real network-reachable APIs (unlike this rTorrent setup), so they likely don't need the SSH approach at all. Worth checking the specific target's actual reachability before assuming a network API call will work, the way `rtorrent.js`'s header comment documents doing for this one.
