@@ -74,8 +74,9 @@ async function main() {
   assert(system.checks.some((check) => check.id === 'download_client'), 'system health missing download client');
 
   const downloadClient = await request('/settings/download-client');
-  assert(downloadClient.type === 'rtorrent', 'download client should default to rtorrent');
   assert(Array.isArray(downloadClient.supportedTypes), 'download client supported types missing');
+  assert(downloadClient.supportedTypes.some((type) => type.id === downloadClient.type), 'active download client type should be supported');
+  assert(downloadClient.supportedTypes.some((type) => type.id === 'qbittorrent'), 'qBittorrent download client type missing');
 
   const candidateRules = await request('/settings/candidate-rules');
   assert(Array.isArray(candidateRules.preferredPhrases), 'candidate rules preferred phrases missing');

@@ -33,7 +33,7 @@ The name is a nod to the long-running Australian music-video program *Rage*, plu
 
 **Concert releases**
 - Ragearr can search full concert/live-show releases through Prowlarr and dispatch grabs through the active download-client interface.
-- rTorrent over SSH/SCGI is implemented today.
+- rTorrent over SSH/SCGI and qBittorrent WebUI are implemented today.
 - Other concrete download clients are not implemented yet.
 
 ## Quick Start
@@ -81,8 +81,8 @@ If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the
 - **Auth:** API key is accepted via `X-Api-Key`, `Authorization: Bearer <key>`, or `?apikey=...`; user sessions use bearer tokens.
 - **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials.
 - **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
-- **rTorrent:** The included implementation talks to rTorrent over SSH and a local SCGI socket. See `src/services/downloadClients/README.md`.
-- **Library roots:** Configure roots from Settings. They can be local bind-mounted paths or remote paths reachable through the configured SSH/download-client connection.
+- **Download clients:** rTorrent talks over SSH and a local SCGI socket; qBittorrent talks to the WebUI API. See `src/services/downloadClients/README.md`.
+- **Library roots:** Configure roots from Settings. They can be local bind-mounted paths or remote paths reachable through an SSH-capable download-client connection. qBittorrent can receive concert grabs, but does not provide SSH access for library scans or music-video imports.
 - **Security:** Ragearr is alpha software. Put it behind a reverse proxy with TLS and restrict access before exposing it beyond a trusted LAN/VPN.
 
 ## Tests
@@ -124,7 +124,7 @@ src/
     candidateRules.js     Release-profile style scoring settings
     systemHealth.js       Servarr-style health checks
     thumbnails.js         YouTube thumbnails and generated frame thumbnails
-    downloadClients/      Download-client registry; rTorrent implemented
+    downloadClients/      Download-client registry; rTorrent and qBittorrent
   public/                 Vanilla HTML/CSS/JS UI
 scripts/
   smoke-api.js            Non-destructive API smoke test

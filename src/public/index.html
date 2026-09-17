@@ -263,13 +263,22 @@
 
           <div class="card">
             <h2>Download client</h2>
-            <p class="hint">Concert grabs dispatch through the active download client. rTorrent connects over SSH to a local SCGI socket; other client types can be added behind this same interface.</p>
+            <p class="hint">Concert grabs dispatch through the active download client. Library scans and music-video imports still need an SSH-capable client connection.</p>
             <form id="downloadClientSettingsForm" class="col">
               <label>Client type <select name="type" id="downloadClientTypeSelect"></select></label>
-              <label>Host <input name="host" placeholder="seedbox.example.com" /></label>
-              <label>User <input name="user" placeholder="ssh username" /></label>
-              <label>SSH key path <input name="sshKeyPath" placeholder="/path/to/private_key" /></label>
-              <label>Socket path <input name="socketPath" placeholder="/home/user/.config/rtorrent/socket" /></label>
+              <div class="client-fields" data-client-fields="rtorrent">
+                <label>Host <input name="host" placeholder="seedbox.example.com" /></label>
+                <label>User <input name="user" placeholder="ssh username" /></label>
+                <label>SSH key path <input name="sshKeyPath" placeholder="/path/to/private_key" /></label>
+                <label>Socket path <input name="socketPath" placeholder="/home/user/.config/rtorrent/socket" /></label>
+              </div>
+              <div class="client-fields" data-client-fields="qbittorrent" hidden>
+                <label>WebUI URL <input name="baseUrl" placeholder="http://qbittorrent.example.com:8080" /></label>
+                <label>Username <input name="username" autocomplete="username" /></label>
+                <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current" /></label>
+                <label>Category <input name="category" placeholder="Optional, e.g. ragearr" /></label>
+                <label>Save path <input name="savePath" placeholder="Optional qBittorrent save path" /></label>
+              </div>
               <div class="row">
                 <button type="submit">Save</button>
                 <button type="button" class="secondary" id="testDownloadClientBtn">Test</button>
