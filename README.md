@@ -102,6 +102,7 @@ npm run test:spotify
 npm run test:root-folders
 npm run test:backups
 npm run test:users
+npm run test:download-clients
 ```
 
 ## Architecture
