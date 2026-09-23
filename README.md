@@ -19,7 +19,7 @@ The name is a nod to the long-running Australian music-video program *Rage*, plu
 - Use quality profiles/cutoffs for `yt-dlp` format selection.
 - Track monitored/unmonitored state.
 - Attach existing files manually, or move/rename them into Ragearr's library layout.
-- Scan one or more library root folders over SSH and import existing files it finds.
+- Scan one or more library root folders (local mounts or over SSH) and import existing files it finds.
 - Show YouTube thumbnails or generated frame thumbnails where available.
 
 **Arr-style app features**
@@ -52,10 +52,15 @@ services:
     environment:
       - TZ=Etc/UTC
       - RAGEARR_API_KEY=replace-with-a-long-random-key
+      # optional: owner for files Ragearr writes into local roots (e.g. your media server's user)
+      - RAGEARR_LOCAL_UID=1000
+      - RAGEARR_LOCAL_GID=1000
     volumes:
       - ./config:/config
       - /path/to/your/MusicVideos:/musicvideos
 ```
+
+Then in **Settings -> Library**, add the mounted folder as a local root: `Music Videos | /musicvideos | local`.
 
 Then start it:
 
@@ -82,7 +87,8 @@ If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the
 - **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials.
 - **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
 - **Download clients:** rTorrent talks over SSH and a local SCGI socket; qBittorrent talks to the WebUI API. See `src/services/downloadClients/README.md`.
-- **Library roots:** Configure roots from Settings. They can be local bind-mounted paths or remote paths reachable through an SSH-capable download-client connection. qBittorrent can receive concert grabs, but does not provide SSH access for library scans or music-video imports.
+- **Library roots:** Configure roots from Settings, one per line as `Name | /path`. A root mounted into the container is written `Name | /path | local` and is accessed directly; any other root is reached over the SSH connection of an SSH-capable download client (rTorrent). qBittorrent can receive concert grabs, but does not provide SSH access, so use local roots with it.
+- **File ownership:** the container runs as root. Set `RAGEARR_LOCAL_UID`/`RAGEARR_LOCAL_GID` so files Ragearr writes into local roots are owned by your media user (directories 775, files 664) and stay manageable by other apps.
 - **Security:** Ragearr is alpha software. Put it behind a reverse proxy with TLS and restrict access before exposing it beyond a trusted LAN/VPN.
 
 ## Tests
@@ -103,6 +109,7 @@ npm run test:root-folders
 npm run test:backups
 npm run test:users
 npm run test:download-clients
+npm run test:local-library
 ```
 
 ## Architecture
@@ -119,7 +126,7 @@ src/
     rootFolders.js        Library root-folder settings normalization
     backups.js            JSON backup export/preview/restore
     users.js              Local users, password hashes, and sessions
-    library.js            SSH library scans and manual-import file search
+    library.js            Library scans (local or SSH) and manual-import file search
     notifications.js      Connect/Discord webhook notifications
     qualityProfiles.js    yt-dlp quality/cutoff profiles
     candidateRules.js     Release-profile style scoring settings

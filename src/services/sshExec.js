@@ -27,8 +27,27 @@ function commonOpts(sshKeyPath) {
   ];
 }
 
+// A root folder mounted straight into the container (see rootFolders.js's
+// `local` flag) uses this in place of an SSH connection: the same shell
+// commands the library code already builds run through `sh -c` here instead
+// of on a remote host, so no caller needs a second code path.
+const LOCAL_CONN = Object.freeze({ local: true });
+
+function isLocal(conn) {
+  return Boolean(conn && conn.local);
+}
+
 // Runs a single remote command over SSH and resolves with stdout.
-function sshExec({ host, user, sshKeyPath }, remoteCommand, { timeout = 30000, maxBuffer = 20 * 1024 * 1024 } = {}) {
+function sshExec(conn, remoteCommand, { timeout = 30000, maxBuffer = 20 * 1024 * 1024 } = {}) {
+  if (isLocal(conn)) {
+    return new Promise((resolve, reject) => {
+      execFile('sh', ['-c', remoteCommand], { maxBuffer, timeout }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+  }
+  const { host, user, sshKeyPath } = conn;
   const target = `${user}@${host}`;
   return new Promise((resolve, reject) => {
     execFile(
@@ -43,8 +62,17 @@ function sshExec({ host, user, sshKeyPath }, remoteCommand, { timeout = 30000, m
   });
 }
 
-// Uploads a local file to a remote path via scp.
-function scpUpload({ host, user, sshKeyPath }, localPath, remotePath, { timeout = 20000 } = {}) {
+// Uploads a local file to a remote path via scp (or copies it, for a local root).
+function scpUpload(conn, localPath, remotePath, { timeout = 20000 } = {}) {
+  if (isLocal(conn)) {
+    return new Promise((resolve, reject) => {
+      execFile('cp', [localPath, remotePath], { timeout }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+  }
+  const { host, user, sshKeyPath } = conn;
   const target = `${user}@${host}`;
   return new Promise((resolve, reject) => {
     execFile(
@@ -59,4 +87,4 @@ function scpUpload({ host, user, sshKeyPath }, localPath, remotePath, { timeout 
   });
 }
 
-module.exports = { sshExec, scpUpload };
+module.exports = { sshExec, scpUpload, LOCAL_CONN, isLocal };

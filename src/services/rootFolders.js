@@ -10,11 +10,21 @@ function idFor(kind, pathValue) {
   return `${kind}-${hash}`;
 }
 
+// A root folder is either on the host reached over the download client's SSH
+// connection (the default), or mounted straight into this container - marked
+// with a trailing "| local" in the one-per-line settings format.
+const LOCAL_FLAG = 'local';
+
 function normalizeLine(kind, line, existingByPath) {
   const raw = String(line || '').trim();
   if (!raw) return null;
   const parts = raw.split('|');
-  const pathValue = cleanPath(parts.length > 1 ? parts.slice(1).join('|') : raw);
+  let local = false;
+  if (parts.length >= 3 && parts[parts.length - 1].trim().toLowerCase() === LOCAL_FLAG) {
+    parts.pop();
+    local = true;
+  }
+  const pathValue = cleanPath(parts.length > 1 ? parts.slice(1).join('|') : parts[0]);
   if (!pathValue) return null;
   const label = parts.length > 1 ? parts[0].trim() : '';
   const existing = existingByPath.get(pathValue);
@@ -22,6 +32,7 @@ function normalizeLine(kind, line, existingByPath) {
     id: existing?.id || idFor(kind, pathValue),
     name: label || existing?.name || pathValue.split('/').filter(Boolean).pop() || pathValue,
     path: pathValue,
+    local,
   };
 }
 
@@ -44,6 +55,7 @@ function normalizeList(kind, value, legacyPath, currentList = []) {
           id: item.id || existingByPath.get(cleanPath(item.path))?.id || idFor(kind, item.path),
           name: String(item.name || existingByPath.get(cleanPath(item.path))?.name || cleanPath(item.path).split('/').filter(Boolean).pop() || item.path).trim(),
           path: cleanPath(item.path),
+          local: Boolean(item.local),
         }
       : normalizeLine(kind, item, existingByPath);
     if (!root?.path || seen.has(root.path)) continue;

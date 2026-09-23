@@ -1354,12 +1354,9 @@ document.getElementById('testLibraryBtn').addEventListener('click', () => {
 async function loadLibrarySettings() {
   const cfg = await api('/settings/library');
   const form = document.getElementById('librarySettingsForm');
-  form.musicVideoRootFolders.value = (cfg.musicVideoRootFolders || [])
-    .map((root) => `${root.name} | ${root.path}`)
-    .join('\n');
-  form.concertRootFolders.value = (cfg.concertRootFolders || [])
-    .map((root) => `${root.name} | ${root.path}`)
-    .join('\n');
+  const rootLine = (root) => `${root.name} | ${root.path}${root.local ? ' | local' : ''}`;
+  form.musicVideoRootFolders.value = (cfg.musicVideoRootFolders || []).map(rootLine).join('\n');
+  form.concertRootFolders.value = (cfg.concertRootFolders || []).map(rootLine).join('\n');
 }
 
 let selectedBackup = null;

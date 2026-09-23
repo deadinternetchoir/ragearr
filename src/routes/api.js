@@ -34,8 +34,8 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
   const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
   if (!candidate) throw new Error('no candidate selected for this track');
 
-  const conn = getLibrarySshConn();
   const root = rootFolders.defaultRoot('music');
+  const conn = connForRoot(root);
   if (!conn || !root) throw new Error('Download client SSH connection / music-video root folder not configured');
 
   fs.mkdirSync(LOCAL_DOWNLOAD_DIR, { recursive: true });
@@ -51,8 +51,9 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
     progress('uploading to library…');
     const relPath = library.musicVideoRelativePath(track.artist, track.track_name, 'mkv');
     const remoteDir = `${root.path}/${relPath.slice(0, relPath.lastIndexOf('/'))}`;
-    await sshExec(conn, `mkdir -p '${remoteDir}'`);
+    await sshExec(conn, `mkdir -p ${shellQuote(remoteDir)}`);
     await scpUpload(conn, localFile, `${root.path}/${relPath}`, { timeout: 10 * 60 * 1000 });
+    await library.applyLocalOwnership(conn, { dirs: [remoteDir], files: [`${root.path}/${relPath}`] });
 
     const thumbnailUrl = track.thumbnail_url || thumbnails.youtubeThumbnailUrl(candidate.external_id);
     db.prepare(
@@ -88,11 +89,20 @@ function getDownloadClient() {
   return downloadClients.makeClient();
 }
 
-// Library scanning reuses the active download client's SSH connection details
-// rather than storing a second, duplicate set of host/user/sshKeyPath under a
-// "library" settings key. Only the library path itself needs its own setting.
-function getLibrarySshConn() {
-  return downloadClients.librarySshConn();
+// Library operations on a remote root reuse the active download client's SSH
+// connection details rather than storing a second, duplicate set of
+// host/user/sshKeyPath under a "library" settings key. A root folder mounted
+// into the container (`local`) needs no SSH connection at all; see
+// downloadClients.libraryConnForRoot.
+function connForRoot(root) {
+  return downloadClients.libraryConnForRoot(root);
+}
+
+// Only roots that actually live over SSH need the download client's SSH
+// connection - an all-local library works with no download client at all.
+const SSH_NOT_CONFIGURED = 'Download client SSH connection is not configured - see PUT /api/settings/download-client';
+function missingConnError(roots) {
+  return roots.some((root) => root && !connForRoot(root)) ? SSH_NOT_CONFIGURED : null;
 }
 
 function getDefaultQualityProfileId() {
@@ -432,8 +442,8 @@ router.delete('/tracks/:id', async (req, res) => {
   let fileWarning = null;
 
   if (deleteFile && track.matched_file_path) {
-    const conn = getLibrarySshConn();
     const root = rootFolders.rootForStored('music', track.root_folder_id);
+    const conn = connForRoot(root);
     if (conn && root) {
       try {
         await sshExec(conn, `rm -f ${shellQuote(`${root.path}/${track.matched_file_path}`)}`);
@@ -494,10 +504,9 @@ router.post('/tracks/:id/download', (req, res) => {
   if (candidate.source !== 'youtube') {
     return res.status(400).json({ error: `don't know how to download a '${candidate.source}' candidate` });
   }
-  const conn = getLibrarySshConn();
   const root = rootFolders.defaultRoot('music');
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured - see PUT /api/settings/download-client' });
   if (!root) return res.status(400).json({ error: 'No music-video root folder is configured - see PUT /api/settings/library' });
+  if (!connForRoot(root)) return res.status(400).json({ error: SSH_NOT_CONFIGURED });
 
   db.prepare("UPDATE tracks SET status = 'downloading', updated_at = datetime('now') WHERE id = ?").run(track.id);
   const jobId = jobQueue.enqueue('track_download', track.id, `${track.artist} - ${track.track_name}`);
@@ -507,16 +516,16 @@ router.post('/tracks/:id/download', (req, res) => {
 router.get('/tracks/:id/manual-import/files', async (req, res) => {
   const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
   if (!track) return res.status(404).json({ error: 'not found' });
-  const conn = getLibrarySshConn();
   const roots = rootFolders.roots('music');
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured - see PUT /api/settings/download-client' });
   if (roots.length === 0) return res.status(400).json({ error: 'No music-video root folders are configured - see PUT /api/settings/library' });
+  const connError = missingConnError(roots);
+  if (connError) return res.status(400).json({ error: connError });
 
   const query = Object.prototype.hasOwnProperty.call(req.query, 'q')
     ? String(req.query.q || '').trim()
     : `${track.artist} ${track.track_name}`;
   try {
-    const files = await library.searchMusicVideoFiles(conn, roots, query, 80);
+    const files = await library.searchMusicVideoFiles(connForRoot, roots, query, 80);
     res.json({
       track_id: track.id,
       query,
@@ -537,10 +546,10 @@ router.post('/tracks/:id/manual-import', async (req, res) => {
   if (!isSafeRelativeLibraryPath(filePath)) {
     return res.status(400).json({ error: 'filePath must be a relative library path' });
   }
-  const conn = getLibrarySshConn();
   const root = rootFolders.findRoot('music', rootFolderId);
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured - see PUT /api/settings/download-client' });
   if (!root) return res.status(400).json({ error: 'No music-video root folder is configured - see PUT /api/settings/library' });
+  const conn = connForRoot(root);
+  if (!conn) return res.status(400).json({ error: SSH_NOT_CONFIGURED });
 
   try {
     const sourceAbs = `${root.path}/${filePath}`;
@@ -556,6 +565,7 @@ router.post('/tracks/:id/manual-import', async (req, res) => {
         await sshExec(conn, `mkdir -p ${shellQuote(destDir)} && test ! -e ${shellQuote(destAbs)} && mv ${shellQuote(sourceAbs)} ${shellQuote(destAbs)}`, {
           timeout: 60000,
         });
+        await library.applyLocalOwnership(conn, { dirs: [destDir], files: [destAbs] });
         moved = true;
       }
     }
@@ -929,20 +939,23 @@ router.put('/settings/library', (req, res) => {
 });
 
 router.post('/settings/library/test', async (req, res) => {
-  const conn = getLibrarySshConn();
   const libCfg = rootFolders.getConfig();
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured' });
   const paths = [
-    ...libCfg.musicVideoRootFolders.map((root) => ({ key: 'musicVideoRootFolders', label: `Music videos: ${root.name}`, path: root.path })),
-    ...libCfg.concertRootFolders.map((root) => ({ key: 'concertRootFolders', label: `Concerts: ${root.name}`, path: root.path })),
+    ...libCfg.musicVideoRootFolders.map((root) => ({ key: 'musicVideoRootFolders', label: `Music videos: ${root.name}`, path: root.path, local: root.local, root })),
+    ...libCfg.concertRootFolders.map((root) => ({ key: 'concertRootFolders', label: `Concerts: ${root.name}`, path: root.path, local: root.local, root })),
   ];
   if (paths.length === 0) return res.status(400).json({ error: 'No library paths are configured' });
 
   const results = [];
-  for (const entry of paths) {
+  for (const { root, ...entry } of paths) {
+    const conn = connForRoot(root);
+    if (!conn) {
+      results.push({ ...entry, status: 'fail', message: 'Download client SSH connection is not configured' });
+      continue;
+    }
     try {
-      await sshExec(conn, `test -d '${entry.path}'`, { timeout: 12000 });
-      results.push({ ...entry, status: 'ok', message: 'Reachable' });
+      await sshExec(conn, `test -d ${shellQuote(entry.path)} && test -w ${shellQuote(entry.path)}`, { timeout: 12000 });
+      results.push({ ...entry, status: 'ok', message: entry.local ? 'Reachable (local mount)' : 'Reachable' });
     } catch (e) {
       results.push({ ...entry, status: 'fail', message: e.message });
     }
@@ -984,12 +997,12 @@ function getOrCreateLibraryList() {
 // Either way, Search/View candidates stay available per track afterward,
 // same as Radarr letting you search for an upgrade on something you have.
 router.post('/library/scan-music-videos', async (req, res) => {
-  const conn = getLibrarySshConn();
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured - see PUT /api/settings/download-client' });
   const roots = rootFolders.roots('music');
   if (roots.length === 0) {
     return res.status(400).json({ error: 'No music-video root folders are configured - see PUT /api/settings/library' });
   }
+  const connError = missingConnError(roots);
+  if (connError) return res.status(400).json({ error: connError });
 
   // Every track, any status - a track already 'imported' by an earlier
   // scan still needs to be recognized as known, or it would be wrongly
@@ -997,7 +1010,7 @@ router.post('/library/scan-music-videos', async (req, res) => {
   const tracks = db.prepare('SELECT id, artist, track_name FROM tracks').all();
 
   try {
-    const { files, matches, unmatched } = await library.scanMusicVideos(conn, roots, tracks);
+    const { files, matches, unmatched } = await library.scanMusicVideos(connForRoot, roots, tracks);
 
     const update = db.prepare(
       "UPDATE tracks SET status = 'imported', matched_file_path = ?, root_folder_id = ?, updated_at = datetime('now') WHERE id = ?"
@@ -1026,7 +1039,7 @@ router.post('/library/scan-music-videos', async (req, res) => {
       if (current?.thumbnail_url) continue;
       const root = rootFolders.findRoot('music', target.rootFolderId);
       if (!root) continue;
-      const thumbUrl = await tryGenerateTrackThumbnail(conn, root.path, target.filePath, target.trackId);
+      const thumbUrl = await tryGenerateTrackThumbnail(connForRoot(root), root.path, target.filePath, target.trackId);
       if (thumbUrl) {
         db.prepare("UPDATE tracks SET thumbnail_url = ?, updated_at = datetime('now') WHERE id = ?").run(thumbUrl, target.trackId);
       }
@@ -1056,17 +1069,17 @@ router.post('/library/scan-music-videos', async (req, res) => {
 // it wasn't grabbed via Prowlarr) for any release found with no existing
 // record at all.
 router.post('/library/scan-concerts', async (req, res) => {
-  const conn = getLibrarySshConn();
-  if (!conn) return res.status(400).json({ error: 'Download client SSH connection is not configured - see PUT /api/settings/download-client' });
   const roots = rootFolders.roots('concerts');
   if (roots.length === 0) {
     return res.status(400).json({ error: 'No concert root folders are configured - see PUT /api/settings/library' });
   }
+  const connError = missingConnError(roots);
+  if (connError) return res.status(400).json({ error: connError });
 
   const grabs = db.prepare('SELECT id, artist, release_title FROM concert_grabs').all();
 
   try {
-    const { entries, matches, unmatched } = await library.scanConcerts(conn, roots, grabs);
+    const { entries, matches, unmatched } = await library.scanConcerts(connForRoot, roots, grabs);
 
     const update = db.prepare("UPDATE concert_grabs SET status = 'imported', matched_path = ?, root_folder_id = ? WHERE id = ?");
     const insert = db.prepare(

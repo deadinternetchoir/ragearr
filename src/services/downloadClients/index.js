@@ -1,7 +1,7 @@
 const settings = require('../settings');
 const rtorrent = require('./rtorrent');
 const qbittorrent = require('./qbittorrent');
-const { sshExec } = require('../sshExec');
+const { sshExec, LOCAL_CONN } = require('../sshExec');
 
 const DEFAULT_TYPE = 'rtorrent';
 
@@ -128,6 +128,15 @@ function librarySshConn() {
   return spec.librarySshConn(cfg);
 }
 
+// The connection library operations should use for a given root folder: a
+// root mounted into the container runs its commands locally; anything else
+// goes over the download client's SSH connection as before. Returns null when
+// a remote root has no SSH connection configured.
+function libraryConnForRoot(root) {
+  if (root?.local) return LOCAL_CONN;
+  return librarySshConn();
+}
+
 async function checkActive() {
   const type = activeType();
   const spec = TYPES[type];
@@ -169,5 +178,6 @@ module.exports = {
   setConfig,
   makeClient,
   librarySshConn,
+  libraryConnForRoot,
   checkActive,
 };
