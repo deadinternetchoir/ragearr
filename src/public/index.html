@@ -4,13 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ragearr</title>
+  <link rel="icon" href="favicon.png" type="image/png" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="page">
     <nav class="sidebar">
       <div class="sidebar-brand">
-        <span class="wordmark"><span>Rage</span><span class="arr">arr</span></span>
+        <img class="rage-logo-img" src="logo.png" alt="Ragearr" />
       </div>
       <div class="sidebar-item active" data-view="tracks">
         <a href="#"><span class="icon">&#9835;</span>Tracks</a>
@@ -289,7 +290,7 @@
 
           <div class="card">
             <h2>Library</h2>
-            <p class="hint">Root folders scanned over the active download client's SSH connection. Use one folder per line; optionally write "Name | /path". The first music-video root is used for new downloads.</p>
+            <p class="hint">One folder per line; optionally write "Name | /path". Folders are reached over the active download client's SSH connection, unless written as "Name | /path | local" for a folder mounted into the Ragearr container. The first music-video root is used for new downloads.</p>
             <form id="librarySettingsForm" class="col">
               <label>Music video root folders <textarea name="musicVideoRootFolders" rows="4" placeholder="Music Videos | /home/user/media/MusicVideos"></textarea></label>
               <label>Concert root folders <textarea name="concertRootFolders" rows="3" placeholder="Concerts | /home/user/media/Concerts"></textarea></label>

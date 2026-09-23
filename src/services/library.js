@@ -7,12 +7,36 @@
 // File naming convention this matches against: `<musicVideosPath>/<Artist>/<Artist>
 // - <Track Name>.<ext>`.
 
-const { sshExec } = require('./sshExec');
+const { sshExec, isLocal } = require('./sshExec');
 
 const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'webm', 'avi', 'mov'];
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+// Scan/search callers pass either a single connection (every root on the same
+// host) or a function mapping each root folder to its own connection - needed
+// once some roots are mounted locally and others still live over SSH.
+function connResolver(connOrFn) {
+  return typeof connOrFn === 'function' ? connOrFn : () => connOrFn;
+}
+
+// Ragearr's container runs as root, so anything it writes into a locally
+// mounted root would otherwise be root-owned and unmanageable by the media
+// server / other *arr apps sharing that folder. When RAGEARR_LOCAL_UID/GID
+// are set, hand newly written dirs/files to that user. Remote roots keep
+// whatever ownership the SSH user produces, as before.
+async function applyLocalOwnership(conn, { dirs = [], files = [] } = {}) {
+  const uid = process.env.RAGEARR_LOCAL_UID;
+  const gid = process.env.RAGEARR_LOCAL_GID || uid;
+  if (!isLocal(conn) || !uid) return;
+  const all = [...dirs, ...files];
+  if (all.length === 0) return;
+  const cmds = [`chown ${uid}:${gid} ${all.map(shellQuote).join(' ')}`];
+  if (dirs.length) cmds.push(`chmod 775 ${dirs.map(shellQuote).join(' ')}`);
+  if (files.length) cmds.push(`chmod 664 ${files.map(shellQuote).join(' ')}`);
+  await sshExec(conn, cmds.join(' && '), { timeout: 15000 });
 }
 
 // Same normalization approach as youtube.js's own title matching -
@@ -44,7 +68,7 @@ function musicVideoRelativePath(artist, trackName, ext) {
   return `${a}/${a} - ${t}.${ext}`;
 }
 
-// Lists every video file under remotePath via SSH, one relative path per
+// Lists every video file under remotePath (via SSH, or locally), one relative path per
 // line. Uses -iname alternation for the extensions above; NUL-separated
 // output would be more robust against filenames containing newlines, but
 // filenames created by Ragearr's own naming convention never do, and
@@ -56,11 +80,12 @@ async function listFiles(conn, remotePath) {
   return out.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-async function searchMusicVideoFiles(conn, roots, query, limit = 50) {
+async function searchMusicVideoFiles(connOrFn, roots, query, limit = 50) {
+  const connFor = connResolver(connOrFn);
   const terms = normalize(query).split(' ').filter(Boolean);
   const results = [];
   for (const root of roots) {
-    const files = await listFiles(conn, root.path);
+    const files = await listFiles(connFor(root), root.path);
     for (const f of files) {
       if (results.length >= limit) break;
       if (terms.length > 0) {
@@ -99,7 +124,8 @@ function parseMusicVideoEntry(relPath) {
 //     tracks, which is the actual "scan finds what you have" behaviour.
 // Doesn't touch the DB itself - keeps DB writes in the route layer, this
 // project's existing convention (see prowlarr.js/rtorrent.js).
-async function scanMusicVideos(conn, rootFolders, allTracks) {
+async function scanMusicVideos(connOrFn, rootFolders, allTracks) {
+  const connFor = connResolver(connOrFn);
   // Index known tracks by normalized "artist::artist - track" key for a
   // direct lookup per file rather than an O(files * tracks) scan.
   const byKey = new Map();
@@ -111,7 +137,7 @@ async function scanMusicVideos(conn, rootFolders, allTracks) {
   const matches = [];
   const unmatched = [];
   for (const root of rootFolders) {
-    const rootFiles = await listFiles(conn, root.path);
+    const rootFiles = await listFiles(connFor(root), root.path);
     for (const f of rootFiles) {
       files.push({ rootFolderId: root.id, filePath: f });
       const parsed = parseMusicVideoEntry(f);
@@ -168,12 +194,13 @@ function parseConcertEntry(relPath) {
 
 // Same "match existing, surface what's new" shape as scanMusicVideos above,
 // applied to concert_grabs.
-async function scanConcerts(conn, rootFolders, allGrabs) {
+async function scanConcerts(connOrFn, rootFolders, allGrabs) {
+  const connFor = connResolver(connOrFn);
   const entries = [];
   const matches = [];
   const unmatched = [];
   for (const root of rootFolders) {
-    const rootEntries = await listArtistEntries(conn, root.path);
+    const rootEntries = await listArtistEntries(connFor(root), root.path);
     for (const e of rootEntries) {
       entries.push({ rootFolderId: root.id, matchedPath: e });
       const parsed = parseConcertEntry(e);
@@ -192,4 +219,12 @@ async function scanConcerts(conn, rootFolders, allGrabs) {
   return { entries, matches, unmatched };
 }
 
-module.exports = { scanMusicVideos, scanConcerts, searchMusicVideoFiles, normalize, sanitizeFilename, musicVideoRelativePath };
+module.exports = {
+  scanMusicVideos,
+  scanConcerts,
+  searchMusicVideoFiles,
+  applyLocalOwnership,
+  normalize,
+  sanitizeFilename,
+  musicVideoRelativePath,
+};

@@ -16,10 +16,8 @@ npm-debug.log*
 # SSH keys - never commit private keys
 .ssh/
 
-# Local/generated brand experiments
+# Local brand working files (the shipped logo/favicon live in src/public/)
 /logo/
-/src/public/logo.png
-/src/public/favicon.png
 
 # Editor/OS
 .DS_Store

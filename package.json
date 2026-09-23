@@ -29,7 +29,8 @@
     "test:root-folders": "node scripts/test-root-folders.js",
     "test:backups": "node scripts/test-backups.js",
     "test:users": "node scripts/test-users.js",
-    "test:download-clients": "node scripts/test-download-clients.js"
+    "test:download-clients": "node scripts/test-download-clients.js",
+    "test:local-library": "node scripts/test-local-library.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
