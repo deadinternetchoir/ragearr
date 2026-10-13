@@ -113,6 +113,7 @@ npm run test:local-library
 npm run test:api-auth
 npm run test:path-safety
 npm run test:ssh-safety
+npm run test:job-queue
 ```
 
 ## Architecture

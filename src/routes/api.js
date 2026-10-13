@@ -31,18 +31,22 @@ const LOCAL_DOWNLOAD_DIR = process.env.RAGEARR_DOWNLOAD_DIR || '/tmp/ragearr-dl'
 jobQueue.registerHandler('track_download', async (job, progress) => {
   const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(job.ref_id);
   if (!track) throw new Error('track no longer exists');
-  const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
-  if (!candidate) throw new Error('no candidate selected for this track');
-
-  const root = rootFolders.defaultRoot('music');
-  const conn = connForRoot(root);
-  if (!conn || !root) throw new Error('Download client SSH connection / music-video root folder not configured');
-
-  fs.mkdirSync(LOCAL_DOWNLOAD_DIR, { recursive: true });
   const localTemplate = path.join(LOCAL_DOWNLOAD_DIR, `${track.id}.%(ext)s`);
   const localFile = path.join(LOCAL_DOWNLOAD_DIR, `${track.id}.mkv`); // youtube.download always merges to mkv
+  let candidate = null;
 
+  // Everything after the track lookup is inside the try, so any failure
+  // (including a missing candidate or root folder) releases the track from
+  // 'downloading' instead of leaving it stuck there.
   try {
+    candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
+    if (!candidate) throw new Error('no candidate selected for this track');
+
+    const root = rootFolders.defaultRoot('music');
+    const conn = connForRoot(root);
+    if (!conn || !root) throw new Error('Download client SSH connection / music-video root folder not configured');
+
+    fs.mkdirSync(LOCAL_DOWNLOAD_DIR, { recursive: true });
     const profile = qualityProfiles.get(track.quality_profile || getDefaultQualityProfileId());
     progress('downloading via yt-dlp…');
     const dl = await youtube.download(candidate.external_id, localTemplate, profile);

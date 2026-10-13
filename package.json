@@ -33,7 +33,8 @@
     "test:local-library": "node scripts/test-local-library.js",
     "test:api-auth": "node scripts/test-api-auth.js",
     "test:path-safety": "node scripts/test-path-safety.js",
-    "test:ssh-safety": "node scripts/test-ssh-safety.js"
+    "test:ssh-safety": "node scripts/test-ssh-safety.js",
+    "test:job-queue": "node scripts/test-job-queue.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
