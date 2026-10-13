@@ -110,6 +110,7 @@ npm run test:backups
 npm run test:users
 npm run test:download-clients
 npm run test:local-library
+npm run test:api-auth
 ```
 
 ## Architecture

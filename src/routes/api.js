@@ -138,6 +138,13 @@ function requireAdmin(req, res) {
   return false;
 }
 
+// Route-level guard for settings and backups: these hold or change credentials,
+// SSH targets and library paths, so a plain 'user' role must not reach them.
+function adminOnly(req, res, next) {
+  if (req.auth?.role === 'admin') return next();
+  res.status(403).json({ error: 'admin access required' });
+}
+
 function candidateWithThumbnail(row) {
   if (!row) return row;
   return {
@@ -164,14 +171,14 @@ router.get('/wanted-lists', (req, res) => {
 
 // --- Backup / restore ---
 
-router.get('/backup/export', (req, res) => {
+router.get('/backup/export', adminOnly, (req, res) => {
   const backup = backups.createBackup(db);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', `attachment; filename="${backups.filename()}"`);
   res.json(backup);
 });
 
-router.post('/backup/preview', (req, res) => {
+router.post('/backup/preview', adminOnly, (req, res) => {
   try {
     const payload = req.body?.backup || req.body;
     const { summary } = backups.validateBackup(db, payload);
@@ -668,14 +675,14 @@ router.get('/settings/prowlarr', (req, res) => {
   res.json(cfg || {});
 });
 
-router.put('/settings/prowlarr', (req, res) => {
+router.put('/settings/prowlarr', adminOnly, (req, res) => {
   const { baseUrl, apiKey } = req.body;
   if (!baseUrl || !apiKey) return res.status(400).json({ error: 'baseUrl and apiKey are required' });
   settings.set('prowlarr', { baseUrl, apiKey });
   res.json({ ok: true });
 });
 
-router.post('/settings/prowlarr/test', async (req, res) => {
+router.post('/settings/prowlarr/test', adminOnly, async (req, res) => {
   const client = getProwlarrClient();
   if (!client) return res.status(400).json({ error: 'Prowlarr is not configured' });
   try {
@@ -725,7 +732,7 @@ router.get('/settings/spotify', (req, res) => {
   res.json(spotify.publicConfig());
 });
 
-router.put('/settings/spotify', (req, res) => {
+router.put('/settings/spotify', adminOnly, (req, res) => {
   try {
     res.json(spotify.setConfig(req.body || {}));
   } catch (e) {
@@ -733,7 +740,7 @@ router.put('/settings/spotify', (req, res) => {
   }
 });
 
-router.post('/settings/spotify/test', async (req, res) => {
+router.post('/settings/spotify/test', adminOnly, async (req, res) => {
   try {
     res.json(await spotify.testConnection());
   } catch (e) {
@@ -745,13 +752,13 @@ router.get('/settings/notifications', (req, res) => {
   res.json(notifications.publicConfig());
 });
 
-router.put('/settings/notifications', (req, res) => {
+router.put('/settings/notifications', adminOnly, (req, res) => {
   const { discordWebhookUrl, events } = req.body || {};
   const cfg = notifications.saveConfig({ discordWebhookUrl, events });
   res.json({ ok: true, ...cfg });
 });
 
-router.post('/settings/notifications/test', async (req, res) => {
+router.post('/settings/notifications/test', adminOnly, async (req, res) => {
   if (!notifications.publicConfig().configured) return res.status(400).json({ error: 'Discord webhook is not configured' });
   try {
     await notifications.notify('test', { message: 'Ragearr Connect is configured.' });
@@ -785,7 +792,7 @@ router.get('/settings/rtorrent', (req, res) => {
   res.json(downloadClients.publicConfig('rtorrent'));
 });
 
-router.put('/settings/rtorrent', (req, res) => {
+router.put('/settings/rtorrent', adminOnly, (req, res) => {
   const { host, user, sshKeyPath, socketPath } = req.body;
   try {
     downloadClients.setConfig('rtorrent', { host, user, sshKeyPath, socketPath });
@@ -795,7 +802,7 @@ router.put('/settings/rtorrent', (req, res) => {
   }
 });
 
-router.post('/settings/rtorrent/test', async (req, res) => {
+router.post('/settings/rtorrent/test', adminOnly, async (req, res) => {
   const client = getRtorrentClient();
   if (!client) return res.status(400).json({ error: 'rTorrent is not configured' });
   try {
@@ -817,7 +824,7 @@ router.get('/settings/download-client', (req, res) => {
   res.json(downloadClients.publicConfig());
 });
 
-router.put('/settings/download-client', (req, res) => {
+router.put('/settings/download-client', adminOnly, (req, res) => {
   const {
     type = 'rtorrent',
     host,
@@ -838,7 +845,7 @@ router.put('/settings/download-client', (req, res) => {
   }
 });
 
-router.post('/settings/download-client/test', async (req, res) => {
+router.post('/settings/download-client/test', adminOnly, async (req, res) => {
   const client = getDownloadClient();
   if (!client) return res.status(400).json({ error: 'Download client is not configured' });
   try {
@@ -922,7 +929,7 @@ router.get('/settings/library', (req, res) => {
   res.json(rootFolders.getConfig());
 });
 
-router.put('/settings/library', (req, res) => {
+router.put('/settings/library', adminOnly, (req, res) => {
   const { musicVideosPath, concertsPath, musicVideoRootFolders, concertRootFolders, defaultMusicVideosRootFolderId, defaultConcertRootFolderId } = req.body || {};
   if (!musicVideosPath && !concertsPath && !musicVideoRootFolders && !concertRootFolders) {
     return res.status(400).json({ error: 'At least one library root folder is required' });
@@ -938,7 +945,7 @@ router.put('/settings/library', (req, res) => {
   res.json({ ok: true, ...cfg });
 });
 
-router.post('/settings/library/test', async (req, res) => {
+router.post('/settings/library/test', adminOnly, async (req, res) => {
   const libCfg = rootFolders.getConfig();
   const paths = [
     ...libCfg.musicVideoRootFolders.map((root) => ({ key: 'musicVideoRootFolders', label: `Music videos: ${root.name}`, path: root.path, local: root.local, root })),
