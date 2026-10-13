@@ -17,6 +17,10 @@ function lines(value) {
 }
 
 function numberOrDefault(value, fallback) {
+  // Number('') and Number(null) are 0, which would silently turn a blank form
+  // field into a score of zero rather than the default.
+  if (value === null || value === undefined || typeof value === 'boolean') return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }

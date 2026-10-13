@@ -115,6 +115,7 @@ npm run test:path-safety
 npm run test:ssh-safety
 npm run test:job-queue
 npm run test:backup-integrity
+npm run test:candidate-scoring
 ```
 
 ## Architecture
