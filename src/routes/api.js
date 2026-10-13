@@ -456,7 +456,10 @@ router.delete('/tracks/:id', async (req, res) => {
   let fileDeleted = false;
   let fileWarning = null;
 
-  if (deleteFile && track.matched_file_path) {
+  if (deleteFile && track.matched_file_path && !isSafeRelativeLibraryPath(track.matched_file_path)) {
+    // matched_file_path normally comes from a scan, but a restored backup can put anything here.
+    fileWarning = 'track removed from Ragearr, but its stored file path is not a safe library path - file was not touched';
+  } else if (deleteFile && track.matched_file_path) {
     const root = rootFolders.rootForStored('music', track.root_folder_id);
     const conn = connForRoot(root);
     if (conn && root) {

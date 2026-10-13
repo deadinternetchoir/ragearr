@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
+const Database = require('better-sqlite3');
 
 const API_KEY = 'test-only-fake-api-key';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ragearr-auth-'));
@@ -112,6 +113,28 @@ async function main() {
     assert(!prowlarrCfg.data.apiKey, 'rejected prowlarr PUT must not store anything');
 
     assert((await call(base, 'GET', '/backup/export', { headers: admin })).status === 200, 'admin can export a backup');
+
+    // --- Deleting a track must not remove files outside the library root ---
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ragearr-lib-'));
+    const libRoot = path.join(sandbox, 'library');
+    fs.mkdirSync(path.join(libRoot, 'Artist'), { recursive: true });
+    fs.writeFileSync(path.join(sandbox, 'outside.txt'), 'must survive');
+    fs.writeFileSync(path.join(libRoot, 'Artist', 'Artist - Real.mkv'), 'library file');
+    const saved = await call(base, 'PUT', '/settings/library', { headers: admin, body: { musicVideoRootFolders: `Test|${libRoot}|local` } });
+    assert(saved.status === 200, 'configure a local root');
+    const rootId = saved.data.musicVideoRootFolders[0].id;
+    const sql = new Database(path.join(dataDir, 'ragearr.db'));
+    const insertTrack = sql.prepare("INSERT INTO tracks (artist, track_name, status, matched_file_path, root_folder_id) VALUES (?, ?, 'imported', ?, ?)");
+    const evilId = insertTrack.run('Evil', 'Traversal', '../outside.txt', rootId).lastInsertRowid;
+    const goodId = insertTrack.run('Artist', 'Real', 'Artist/Artist - Real.mkv', rootId).lastInsertRowid;
+    sql.close();
+    const evil = await call(base, 'DELETE', `/tracks/${evilId}`, { headers: admin });
+    assert(evil.status === 200 && evil.data.fileDeleted === false, 'unsafe stored path must not be deleted');
+    assert(fs.existsSync(path.join(sandbox, 'outside.txt')), 'file outside the library root was deleted');
+    const good = await call(base, 'DELETE', `/tracks/${goodId}`, { headers: admin });
+    assert(good.status === 200 && good.data.fileDeleted === true, 'a normal library file is still deleted');
+    assert(!fs.existsSync(path.join(libRoot, 'Artist', 'Artist - Real.mkv')), 'library file should be gone');
+    fs.rmSync(sandbox, { recursive: true, force: true });
 
     // --- Last-admin protection and session revocation ---
     const bossLogin = await call(base, 'POST', '/auth/login', { body: { username: 'boss', password: 'boss password' } });
