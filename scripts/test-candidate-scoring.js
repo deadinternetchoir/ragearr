@@ -9,6 +9,28 @@ const path = require('path');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ragearr-scoring-'));
 process.env.RAGEARR_DATA_DIR = path.join(tmp, 'data');
 
+// Fake yt-dlp: answers the search call with one plausible official video, and
+// the storyboard call by writing a minimal .mhtml containing one webp part.
+// ffmpeg is deliberately missing, as it can be on a minimal install.
+const fakeYtdlp = path.join(tmp, 'fake-yt-dlp');
+fs.writeFileSync(
+  fakeYtdlp,
+  `#!/bin/sh
+case "$*" in
+  *ytsearch*) printf 'abc123XYZ_-\tTest Artist - Test Song (Official Video)\tTest Artist\t200\t900000\n'; exit 0 ;;
+esac
+out=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out="$2"; fi
+  shift
+done
+printf 'Content-type: image/webp\r\nContent-length: 4\r\nX-Fake: 1\r\n\r\nABCD' > "$out"
+`,
+  { mode: 0o755 }
+);
+process.env.YTDLP_PATH = fakeYtdlp;
+process.env.FFMPEG_PATH = path.join(tmp, 'no-such-ffmpeg');
+
 const candidateRules = require('../src/services/candidateRules');
 const db = require('../src/db');
 
@@ -35,6 +57,14 @@ async function main() {
   const phrases = candidateRules.normalize({ excludedPhrases: ' remix \n\n  slowed ', preferredPhrases: ['  vevo  ', ''] });
   assert(JSON.stringify(phrases.excludedPhrases) === '["remix","slowed"]', 'excluded phrases should be split and trimmed');
   assert(JSON.stringify(phrases.preferredPhrases) === '["vevo"]', 'preferred phrases should be trimmed');
+
+  // docs/static-video-detection.md: the motion check fails open when it cannot
+  // run. With ffmpeg unavailable, a well-matched official video must still be
+  // offered rather than being rejected as "static".
+  const youtube = require('../src/services/youtube');
+  const result = await youtube.findCandidate({ artist: 'Test Artist', trackName: 'Test Song', durationSec: 201 }, candidateRules.get());
+  assert(result.video && result.video.id === 'abc123XYZ_-', `expected the official video, got tier ${result.tier}`);
+  assert(result.tier === 'high', `expected high tier, got ${result.tier}`);
 }
 
 main()
