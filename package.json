@@ -34,7 +34,8 @@
     "test:api-auth": "node scripts/test-api-auth.js",
     "test:path-safety": "node scripts/test-path-safety.js",
     "test:ssh-safety": "node scripts/test-ssh-safety.js",
-    "test:job-queue": "node scripts/test-job-queue.js"
+    "test:job-queue": "node scripts/test-job-queue.js",
+    "test:backup-integrity": "node scripts/test-backup-integrity.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
