@@ -73,7 +73,7 @@ function createUser({ username, password, role = 'user' }) {
   }
 }
 
-function updateUser(id, { password, role }) {
+function updateUser(id, { password, role }, { keepToken = null } = {}) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) throw new Error('user not found');
   const updates = [];
@@ -91,6 +91,9 @@ function updateUser(id, { password, role }) {
   updates.push("updated_at = datetime('now')");
   params.push(id);
   db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  if (password !== undefined && password !== '') {
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token IS NOT ?').run(user.id, keepToken);
+  }
   return getUser(id);
 }
 
