@@ -5,7 +5,7 @@ const prowlarr = require('./prowlarr');
 const downloadClients = require('./downloadClients');
 const notifications = require('./notifications');
 const rootFolders = require('./rootFolders');
-const { sshExec } = require('./sshExec');
+const { sshExec, shellQuote } = require('./sshExec');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -70,7 +70,7 @@ async function checkLibraryPaths() {
         continue;
       }
       try {
-        await sshExec(conn, `test -d '${root.path}' && test -w '${root.path}'`, { timeout: 12000 });
+        await sshExec(conn, `test -d ${shellQuote(root.path)} && test -w ${shellQuote(root.path)}`, { timeout: 12000 });
       } catch (e) {
         failures.push(`${label}: ${e.message}`);
       }

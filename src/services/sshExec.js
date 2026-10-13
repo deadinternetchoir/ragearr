@@ -52,7 +52,8 @@ function sshExec(conn, remoteCommand, { timeout = 30000, maxBuffer = 20 * 1024 *
   return new Promise((resolve, reject) => {
     execFile(
       SSH_BIN,
-      [...commonOpts(sshKeyPath), target, remoteCommand],
+      // '--' stops a user/host starting with '-' being read as an ssh option
+      [...commonOpts(sshKeyPath), '--', target, remoteCommand],
       { maxBuffer, timeout },
       (err, stdout, stderr) => {
         if (err) return reject(new Error(stderr || err.message));
@@ -77,7 +78,7 @@ function scpUpload(conn, localPath, remotePath, { timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     execFile(
       SCP_BIN,
-      [...commonOpts(sshKeyPath), localPath, `${target}:${remotePath}`],
+      [...commonOpts(sshKeyPath), '--', localPath, `${target}:${remotePath}`],
       { timeout },
       (err, stdout, stderr) => {
         if (err) return reject(new Error(stderr || err.message));
@@ -87,4 +88,8 @@ function scpUpload(conn, localPath, remotePath, { timeout = 20000 } = {}) {
   });
 }
 
-module.exports = { sshExec, scpUpload, LOCAL_CONN, isLocal };
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+module.exports = { sshExec, scpUpload, LOCAL_CONN, isLocal, shellQuote };

@@ -339,8 +339,10 @@ async function sliceIntoTiles(webpBuffers, tileDir) {
   return n;
 }
 
+// Returns null when the count could not be produced (ffmpeg missing or
+// failing), so the caller can fail open rather than read it as "zero cuts".
 async function countSceneChangesInTiles(tileDir, tileCount) {
-  if (tileCount < 2) return 0;
+  if (tileCount < 2) return null;
   const videoPath = path.join(tileDir, 'synthetic.mp4');
   await new Promise((resolve) => {
     execFile(
@@ -356,6 +358,7 @@ async function countSceneChangesInTiles(tileDir, tileCount) {
       ['-i', videoPath, '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-'],
       { maxBuffer: 20 * 1024 * 1024, timeout: 30000 },
       (err, stdout, stderr) => {
+        if (err) return resolve(null);
         const matches = (stderr || '').match(/Parsed_showinfo/g);
         resolve(matches ? matches.length : 0);
       }
@@ -373,6 +376,7 @@ async function hasMotion(videoId) {
     if (images.length === 0) return true; // couldn't parse - fail open
     const tileCount = await sliceIntoTiles(images, tileDir);
     const sceneCount = await countSceneChangesInTiles(tileDir, tileCount);
+    if (sceneCount === null) return true; // ffmpeg unavailable or failed - fail open, as documented
     return sceneCount >= MOTION_CHECK_SCENE_THRESHOLD;
   } finally {
     fs.rmSync(tileDir, { recursive: true, force: true });
