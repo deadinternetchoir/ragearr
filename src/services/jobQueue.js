@@ -25,6 +25,12 @@ function registerHandler(type, fn) {
 }
 
 function enqueue(type, refId, label) {
+  // The same work is never queued twice at once (e.g. a double-clicked
+  // Download would otherwise fetch and upload the file a second time).
+  const pending = db
+    .prepare("SELECT id FROM jobs WHERE type = ? AND ref_id = ? AND status IN ('queued', 'running') ORDER BY id LIMIT 1")
+    .get(type, refId);
+  if (pending) return pending.id;
   const info = db
     .prepare("INSERT INTO jobs (type, ref_id, label, status) VALUES (?, ?, ?, 'queued')")
     .run(type, refId, label);
@@ -61,6 +67,9 @@ async function processNext() {
 // container was recreated mid-download) - it can never actually finish,
 // so mark it failed rather than let it sit forever looking "in progress".
 function recoverStuckJobs() {
+  // No job is running at this point, so nothing can still be downloading;
+  // put those tracks back to the state a failed download leaves them in.
+  db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE status = 'downloading'").run();
   db.prepare("UPDATE jobs SET status = 'failed', message = 'interrupted by a restart', updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
 }
 
