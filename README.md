@@ -116,6 +116,7 @@ npm run test:ssh-safety
 npm run test:job-queue
 npm run test:backup-integrity
 npm run test:candidate-scoring
+npm run test:import-edge-cases
 ```
 
 ## Architecture
