@@ -30,7 +30,8 @@
     "test:backups": "node scripts/test-backups.js",
     "test:users": "node scripts/test-users.js",
     "test:download-clients": "node scripts/test-download-clients.js",
-    "test:local-library": "node scripts/test-local-library.js"
+    "test:local-library": "node scripts/test-local-library.js",
+    "test:api-auth": "node scripts/test-api-auth.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

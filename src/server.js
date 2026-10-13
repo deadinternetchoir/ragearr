@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const db = require('./db');
@@ -20,8 +21,15 @@ app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/generated-thumbnails', express.static(thumbnails.THUMBNAIL_DIR));
 
+// Constant-time comparison. Hashing first gives both sides equal length, so
+// timingSafeEqual neither throws on a length mismatch nor leaks the key's length.
+function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 function suppliedApiKey(req) {
-  const auth = req.get('authorization') || '';
   return req.get('x-api-key') || req.query.apikey || '';
 }
 
@@ -32,12 +40,12 @@ function suppliedBearer(req) {
 
 function authFromRequest(req) {
   const apiKey = suppliedApiKey(req);
-  if (API_KEY && apiKey === API_KEY) {
+  if (API_KEY && apiKey && safeEqual(apiKey, API_KEY)) {
     return { type: 'api_key', role: 'admin', user: { id: null, username: 'api-key', role: 'admin' } };
   }
 
   const bearer = suppliedBearer(req);
-  if (API_KEY && bearer === API_KEY) {
+  if (API_KEY && bearer && safeEqual(bearer, API_KEY)) {
     return { type: 'api_key', role: 'admin', user: { id: null, username: 'api-key', role: 'admin' } };
   }
 
