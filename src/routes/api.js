@@ -228,7 +228,15 @@ router.post('/users', (req, res) => {
 router.patch('/users/:id', (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
-    res.json(users.updateUser(req.params.id, req.body || {}));
+    const body = req.body || {};
+    const target = users.getUser(req.params.id);
+    if (target && target.role === 'admin' && body.role !== undefined && body.role !== 'admin') {
+      const admins = users.listUsers().filter((user) => user.role === 'admin');
+      if (admins.length <= 1) return res.status(400).json({ error: 'cannot demote the last admin user' });
+    }
+    // A password change signs the user out everywhere, except the session making the change.
+    const keepToken = req.auth?.user?.id === target?.id ? req.auth.token : null;
+    res.json(users.updateUser(req.params.id, body, { keepToken }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
