@@ -15,7 +15,7 @@
 // src/services/downloadClients/README.md.
 
 const path = require('path');
-const { sshExec, scpUpload } = require('../sshExec');
+const { sshExec, scpUpload, shellQuote } = require('../sshExec');
 
 const REMOTE_SCRIPT_PATH = '.ragearr_rtorrent_scgi.py';
 const LOCAL_SCRIPT_PATH = path.join(__dirname, 'rtorrent_scgi.py');
@@ -37,7 +37,7 @@ function makeClient({ host, user, sshKeyPath, socketPath }) {
   async function call(method, ...params) {
     await ensureRemoteScript();
     const quotedParams = params.map((p) => `'${String(p).replace(/'/g, "'\\''")}'`).join(' ');
-    const cmd = `python3 ${REMOTE_SCRIPT_PATH} '${socketPath}' '${method}' ${quotedParams}`.trim();
+    const cmd = `python3 ${REMOTE_SCRIPT_PATH} ${shellQuote(socketPath)} '${method}' ${quotedParams}`.trim();
     return sshExec(conn, cmd);
   }
 
