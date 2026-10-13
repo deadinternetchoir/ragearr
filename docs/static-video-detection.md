@@ -36,12 +36,12 @@ But it has two real costs: several MB downloaded per candidate checked, and it o
 
 Same clean separation, **tens of KB instead of several MB, and covers the video's entire duration** rather than one sampled slice — strictly better on both cost and reliability. No part of the actual video is ever downloaded just to run this check.
 
-Threshold used: `MOTION_CHECK_SCENE_THRESHOLD = 5` in `src/services/youtube.js` — both known examples clear it by 6x+ margin (34 vs 5), so there's real headroom before this needs tuning.
+Threshold used: `MOTION_CHECK_SCENE_THRESHOLD = 12` in `src/services/youtube.js`. It was originally 5, validated against only the two cases above (static scored 2, real video scored 34). It was raised to 12 after reports of stills with a few cuts or a spinning logo passing; 12 is a reasoned adjustment, not re-validated against those specific videos. The one known real video (34) still clears it comfortably.
 
 ## Where this lives in the code
 
 `src/services/youtube.js`:
-- `hasMotion(videoId)` — fetches the storyboard, extracts/slices/stitches, runs the scene-change count, returns true/false. Fails open (returns true) if no storyboard is available for a given video, e.g. some livestreams/restricted content — don't block a candidate on a check that couldn't actually run.
-- `findCandidate()` ranks *all* plausible candidates per tier (not just the top one) and walks them best-first via `pickFirstWithMotion()`, rejecting any that fail the motion check and trying the next, falling through tiers (high → medium → live) rather than giving up on the first static hit.
+- `hasMotion(videoId)` — fetches the storyboard, extracts/slices/stitches, runs the scene-change count, returns true/false. Fails open (returns true) if no storyboard is available for a given video, e.g. some livestreams/restricted content, or if ffmpeg is missing or fails — don't block a candidate on a check that couldn't actually run.
+- `findCandidate()` ranks *all* plausible candidates per tier (not just the top one) and walks them best-first via `pickFirstWithMotion()`, rejecting any that fail the motion check and trying the next, falling through tiers (high → medium) rather than giving up on the first static hit. There is no live-performance tier any more: if only live, concert, festival or session recordings exist, the result is `none`.
 
 This runs **before** any full download happens — the goal (per direct user request) was catching this at candidate-selection time, not as an after-the-fact cleanup pass on already-downloaded files.
