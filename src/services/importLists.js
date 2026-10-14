@@ -1,10 +1,41 @@
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
+const net = require('net');
 const { execFile } = require('child_process');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 
-function fetchText(rawUrl) {
+// Loopback and link-local (including the 169.254.169.254 cloud metadata address) are never
+// valid import-list hosts. Private LAN ranges are allowed on purpose: self-hosted
+// installs often serve lists from another machine on the LAN.
+function isBlockedAddress(address) {
+  let ip = String(address).toLowerCase();
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) ip = mapped[1];
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 127 || a === 0 || (a === 169 && b === 254);
+  }
+  if (net.isIPv6(ip)) {
+    return ip === '::1' || ip === '::' || /^fe[89ab]/.test(ip);
+  }
+  return false;
+}
+
+// Checks the address actually connected to (after DNS), so a hostname that resolves to
+// a blocked address is refused too.
+function guardedLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (err) return callback(err);
+    const list = Array.isArray(address) ? address.map((a) => a.address) : [address];
+    if (list.some(isBlockedAddress)) return callback(new Error('URL points at a loopback or link-local address'));
+    return callback(null, address, family);
+  });
+}
+
+// opts.allowLoopback exists for the test suite only; no route passes it.
+function fetchText(rawUrl, opts = {}) {
   return new Promise((resolve, reject) => {
     let parsed;
     try {
@@ -17,8 +48,15 @@ function fetchText(rawUrl) {
       reject(new Error('URL must start with http:// or https://'));
       return;
     }
+    const host = parsed.hostname.replace(/^\[|\]$/g, '');
+    if (!opts.allowLoopback && isBlockedAddress(host)) {
+      reject(new Error('URL points at a loopback or link-local address'));
+      return;
+    }
     const client = parsed.protocol === 'https:' ? https : http;
-    const req = client.get(parsed, { timeout: 15000, headers: { Accept: 'text/csv,text/plain,*/*' } }, (res) => {
+    const reqOptions = { timeout: 15000, headers: { Accept: 'text/csv,text/plain,*/*' } };
+    if (!opts.allowLoopback) reqOptions.lookup = guardedLookup;
+    const req = client.get(parsed, reqOptions, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         reject(new Error(`HTTP ${res.statusCode}`));
         res.resume();
@@ -282,6 +320,7 @@ function keyFor(row) {
 
 module.exports = {
   fetchText,
+  isBlockedAddress,
   parseText,
   keyFor,
   isSpotifyPlaylistUrl,

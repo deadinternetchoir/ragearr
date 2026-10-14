@@ -114,6 +114,10 @@ function insertRows(db, table, rows) {
 
 function restoreBackup(db, input) {
   const { backup, summary } = validateBackup(db, input);
+  // A backup with no users (older exports, or one made before accounts existed) must not
+  // wipe the accounts that are already here: with no users the API falls back to open
+  // bootstrap mode when RAGEARR_API_KEY is unset.
+  const keepUsers = backup.tables.users.length === 0;
   const restore = db.transaction(() => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM sessions').run();
@@ -121,11 +125,11 @@ function restoreBackup(db, input) {
     db.prepare('DELETE FROM tracks').run();
     db.prepare('DELETE FROM concert_grabs').run();
     db.prepare('DELETE FROM wanted_lists').run();
-    db.prepare('DELETE FROM users').run();
+    if (!keepUsers) db.prepare('DELETE FROM users').run();
     db.prepare('DELETE FROM settings').run();
 
     insertRows(db, 'settings', backup.tables.settings);
-    insertRows(db, 'users', backup.tables.users);
+    if (!keepUsers) insertRows(db, 'users', backup.tables.users);
     insertRows(db, 'wanted_lists', backup.tables.wanted_lists);
     insertRows(db, 'tracks', backup.tables.tracks);
     insertRows(db, 'candidates', backup.tables.candidates);
