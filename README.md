@@ -117,6 +117,7 @@ npm run test:job-queue
 npm run test:backup-integrity
 npm run test:candidate-scoring
 npm run test:import-edge-cases
+npm run test:review-followups
 ```
 
 ## Architecture

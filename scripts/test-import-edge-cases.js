@@ -70,8 +70,8 @@ async function fetchTests() {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    assert((await importLists.fetchText(`${base}/ok`)).includes('Artist - Track'), 'plain fetch works');
-    const err = async (url) => importLists.fetchText(url).then(() => null, (e) => e.message);
+    assert((await importLists.fetchText(`${base}/ok`, { allowLoopback: true })).includes('Artist - Track'), 'plain fetch works');
+    const err = async (url) => importLists.fetchText(url, { allowLoopback: true }).then(() => null, (e) => e.message);
     assert(/larger than 1MB/.test(await err(`${base}/big`)), 'oversized responses are cut off');
     const notFound = await err(`${base}/missing`);
     assert(/HTTP 404/.test(notFound) && !/secret/.test(notFound), 'error responses do not echo the body');

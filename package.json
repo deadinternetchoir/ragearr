@@ -37,7 +37,8 @@
     "test:job-queue": "node scripts/test-job-queue.js",
     "test:backup-integrity": "node scripts/test-backup-integrity.js",
     "test:candidate-scoring": "node scripts/test-candidate-scoring.js",
-    "test:import-edge-cases": "node scripts/test-import-edge-cases.js"
+    "test:import-edge-cases": "node scripts/test-import-edge-cases.js",
+    "test:review-followups": "node scripts/test-review-followups.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

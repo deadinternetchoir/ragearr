@@ -34,8 +34,19 @@ function enqueue(type, refId, label) {
   const info = db
     .prepare("INSERT INTO jobs (type, ref_id, label, status) VALUES (?, ?, ?, 'queued')")
     .run(type, refId, label);
-  setImmediate(processNext);
+  schedule();
   return info.lastInsertRowid;
+}
+
+// processNext is async: a database error outside the handler's own try/catch
+// would otherwise be an unhandled rejection, which ends the Node process.
+function schedule() {
+  setImmediate(() => {
+    processNext().catch((e) => {
+      running = false;
+      console.error('job queue error:', e.message);
+    });
+  });
 }
 
 function updateProgress(jobId, message) {
@@ -59,7 +70,7 @@ async function processNext() {
     db.prepare("UPDATE jobs SET status = 'failed', message = ?, updated_at = datetime('now') WHERE id = ?").run(e.message, job.id);
   } finally {
     running = false;
-    setImmediate(processNext); // pick up whatever's next, if anything
+    schedule(); // pick up whatever's next, if anything
   }
 }
 
