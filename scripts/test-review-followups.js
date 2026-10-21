@@ -25,7 +25,7 @@ async function main() {
   for (const addr of ['127.0.0.1', '127.1.2.3', '0.0.0.0', '169.254.169.254', '::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:169.254.169.254']) {
     assert(importLists.isBlockedAddress(addr), `${addr} should be blocked`);
   }
-  for (const addr of ['192.168.1.138', '10.0.0.5', '172.16.0.1', '8.8.8.8', '2001:db8::1']) {
+  for (const addr of ['192.168.1.10', '10.0.0.5', '172.16.0.1', '8.8.8.8', '2001:db8::1']) {
     assert(!importLists.isBlockedAddress(addr), `${addr} should be allowed`);
   }
   for (const url of ['http://127.0.0.1:1/x', 'http://169.254.169.254/latest/meta-data/', 'http://[::1]/x', 'http://localhost/x']) {
