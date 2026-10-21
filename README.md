@@ -110,6 +110,14 @@ npm run test:backups
 npm run test:users
 npm run test:download-clients
 npm run test:local-library
+npm run test:api-auth
+npm run test:path-safety
+npm run test:ssh-safety
+npm run test:job-queue
+npm run test:backup-integrity
+npm run test:candidate-scoring
+npm run test:import-edge-cases
+npm run test:review-followups
 ```
 
 ## Architecture

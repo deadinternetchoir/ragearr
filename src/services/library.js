@@ -63,7 +63,9 @@ function sanitizeFilename(name) {
 // downloaded through this convention is guaranteed to be found again by a
 // later scan rather than silently duplicating it as "new."
 function musicVideoRelativePath(artist, trackName, ext) {
-  const a = sanitizeFilename(artist);
+  // The artist becomes a directory name, so ".." (or an artist that sanitizes
+  // to nothing) must not be able to climb out of, or collapse into, the root.
+  const a = sanitizeFilename(artist).replace(/^[.\s]+/, '') || 'Unknown Artist';
   const t = sanitizeFilename(trackName);
   return `${a}/${a} - ${t}.${ext}`;
 }

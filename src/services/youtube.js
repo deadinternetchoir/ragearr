@@ -44,7 +44,7 @@ const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const MOTION_CHECK_SCENE_THRESHOLD = 12; // minimum scene changes in the sample to count as "real video"
 
 function ytSearch(query, count = 6) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       YTDLP,
       [
@@ -55,7 +55,9 @@ function ytSearch(query, count = 6) {
       ],
       { maxBuffer: 10 * 1024 * 1024, timeout: 45000 },
       (err, stdout) => {
-        if (err && !stdout) return resolve([]);
+        // A failed or missing yt-dlp is an error, not "no results": resolving [] here
+        // marked the track no_match. Rejecting lets the search route put it back to pending.
+        if (err && !stdout) return reject(new Error(`yt-dlp search failed: ${err.code === 'ENOENT' ? 'yt-dlp not found' : err.message}`));
         const lines = stdout.split('\n').filter(Boolean);
         resolve(
           lines.map((l) => {
@@ -214,9 +216,26 @@ function phraseMatches(title, phrase) {
   return String(title || '').toLowerCase().includes(String(phrase).toLowerCase());
 }
 
-function isExcluded(title, rules = {}) {
-  return EXCLUDE_PHRASES.some((re) => re.test(title)) ||
-    CITY_NAME_RE.test(title) ||
+// Removes the first occurrence of `part` (case-insensitive) from `text`.
+function removeFirst(text, part) {
+  const p = String(part || '').trim();
+  if (!p) return text;
+  const i = text.toLowerCase().indexOf(p.toLowerCase());
+  return i === -1 ? text : `${text.slice(0, i)} ${text.slice(i + p.length)}`;
+}
+
+// The built-in exclusions are tested against the title with the artist and track
+// name taken out, so "Live Forever" by Oasis or an official video by Boston or
+// Chicago is not rejected for words that belong to its own name. Only the first
+// occurrence is removed, so a real "(Live in Chicago)" suffix still matches.
+// The user's own excluded phrases are tested against the full title.
+function isExcluded(title, rules = {}, { artist, trackName } = {}) {
+  let stripped = String(title || '');
+  stripped = removeFirst(stripped, trackName);
+  if (trackName) stripped = removeFirst(stripped, coreTrackName(trackName));
+  stripped = removeFirst(stripped, artist);
+  return EXCLUDE_PHRASES.some((re) => re.test(stripped)) ||
+    CITY_NAME_RE.test(stripped) ||
     (rules.excludedPhrases || []).some((phrase) => phraseMatches(title, phrase));
 }
 
@@ -238,7 +257,7 @@ function rankOfficialMv(results, artist, trackName, trackDurationSec, rules = {}
   const ranked = [];
   for (const r of results) {
     if (!r.title || !r.channel) continue;
-    if (isExcluded(r.title, rules)) continue; // live/concert/festival/session titles excluded here, see EXCLUDE_PHRASES
+    if (isExcluded(r.title, rules, { artist, trackName })) continue; // live/concert/festival/session titles excluded here, see EXCLUDE_PHRASES
     if (!titleMatchesTrack(r.title, trackName)) continue;
     const titleLower = r.title.toLowerCase();
     let score = 0;
@@ -339,8 +358,10 @@ async function sliceIntoTiles(webpBuffers, tileDir) {
   return n;
 }
 
+// Returns null when the count could not be produced (ffmpeg missing or
+// failing), so the caller can fail open rather than read it as "zero cuts".
 async function countSceneChangesInTiles(tileDir, tileCount) {
-  if (tileCount < 2) return 0;
+  if (tileCount < 2) return null;
   const videoPath = path.join(tileDir, 'synthetic.mp4');
   await new Promise((resolve) => {
     execFile(
@@ -356,6 +377,7 @@ async function countSceneChangesInTiles(tileDir, tileCount) {
       ['-i', videoPath, '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-'],
       { maxBuffer: 20 * 1024 * 1024, timeout: 30000 },
       (err, stdout, stderr) => {
+        if (err) return resolve(null);
         const matches = (stderr || '').match(/Parsed_showinfo/g);
         resolve(matches ? matches.length : 0);
       }
@@ -373,6 +395,7 @@ async function hasMotion(videoId) {
     if (images.length === 0) return true; // couldn't parse - fail open
     const tileCount = await sliceIntoTiles(images, tileDir);
     const sceneCount = await countSceneChangesInTiles(tileDir, tileCount);
+    if (sceneCount === null) return true; // ffmpeg unavailable or failed - fail open, as documented
     return sceneCount >= MOTION_CHECK_SCENE_THRESHOLD;
   } finally {
     fs.rmSync(tileDir, { recursive: true, force: true });
@@ -473,4 +496,4 @@ function download(videoId, outPathTemplate, qualityProfile) {
   });
 }
 
-module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv };
+module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };

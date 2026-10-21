@@ -68,6 +68,14 @@ function validateBackup(db, input) {
       }
     }
   }
+  // settings.get() JSON.parses every value, so one malformed value would break that setting for good.
+  for (const row of backup.tables.settings) {
+    try {
+      JSON.parse(row.value);
+    } catch {
+      throw new Error(`Backup setting '${row.key}' does not contain valid JSON`);
+    }
+  }
   return {
     ok: true,
     backup,
@@ -82,17 +90,34 @@ function validateBackup(db, input) {
 
 function insertRows(db, table, rows) {
   if (!rows.length) return;
-  const columns = tableColumns(db, table).filter((col) => Object.prototype.hasOwnProperty.call(rows[0], col));
-  const quoted = columns.map((col) => `"${col}"`).join(', ');
-  const placeholders = columns.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO ${table} (${quoted}) VALUES (${placeholders})`);
+  const known = tableColumns(db, table);
+  // Rows may carry different keys, so each row is inserted with its own
+  // columns (columns it omits take the schema default) instead of every row
+  // being forced into the shape of the first one.
+  const statements = new Map();
   for (const row of rows) {
-    stmt.run(...columns.map((col) => row[col]));
+    const columns = known.filter((col) => Object.prototype.hasOwnProperty.call(row, col));
+    const signature = columns.join(',');
+    if (!statements.has(signature)) {
+      const quoted = columns.map((col) => `"${col}"`).join(', ');
+      const placeholders = columns.map(() => '?').join(', ');
+      statements.set(
+        signature,
+        columns.length
+          ? db.prepare(`INSERT INTO ${table} (${quoted}) VALUES (${placeholders})`)
+          : db.prepare(`INSERT INTO ${table} DEFAULT VALUES`)
+      );
+    }
+    statements.get(signature).run(...columns.map((col) => row[col]));
   }
 }
 
 function restoreBackup(db, input) {
   const { backup, summary } = validateBackup(db, input);
+  // A backup with no users (older exports, or one made before accounts existed) must not
+  // wipe the accounts that are already here: with no users the API falls back to open
+  // bootstrap mode when RAGEARR_API_KEY is unset.
+  const keepUsers = backup.tables.users.length === 0;
   const restore = db.transaction(() => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM sessions').run();
@@ -100,17 +125,19 @@ function restoreBackup(db, input) {
     db.prepare('DELETE FROM tracks').run();
     db.prepare('DELETE FROM concert_grabs').run();
     db.prepare('DELETE FROM wanted_lists').run();
-    db.prepare('DELETE FROM users').run();
+    if (!keepUsers) db.prepare('DELETE FROM users').run();
     db.prepare('DELETE FROM settings').run();
 
     insertRows(db, 'settings', backup.tables.settings);
-    insertRows(db, 'users', backup.tables.users);
+    if (!keepUsers) insertRows(db, 'users', backup.tables.users);
     insertRows(db, 'wanted_lists', backup.tables.wanted_lists);
     insertRows(db, 'tracks', backup.tables.tracks);
     insertRows(db, 'candidates', backup.tables.candidates);
     insertRows(db, 'concert_grabs', backup.tables.concert_grabs);
     insertRows(db, 'jobs', backup.tables.jobs);
     db.prepare("UPDATE jobs SET status = 'failed', message = COALESCE(message, 'Marked failed during restore'), updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
+    // Nothing is running after a restore, so no track can still be downloading.
+    db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE status = 'downloading'").run();
   });
   restore();
   return { ok: true, restoredAt: new Date().toISOString(), summary };

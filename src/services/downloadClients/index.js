@@ -1,7 +1,7 @@
 const settings = require('../settings');
 const rtorrent = require('./rtorrent');
 const qbittorrent = require('./qbittorrent');
-const { sshExec, LOCAL_CONN } = require('../sshExec');
+const { sshExec, shellQuote, LOCAL_CONN } = require('../sshExec');
 
 const DEFAULT_TYPE = 'rtorrent';
 
@@ -30,7 +30,7 @@ const TYPES = {
     },
     async check(cfg) {
       const conn = this.librarySshConn(cfg);
-      await sshExec(conn, `test -S '${cfg.socketPath}' && echo ok`, { timeout: 12000 });
+      await sshExec(conn, `test -S ${shellQuote(cfg.socketPath)} && echo ok`, { timeout: 12000 });
       return { message: 'SSH reachable and socket exists', details: this.connectionDetails(cfg) };
     },
   },
