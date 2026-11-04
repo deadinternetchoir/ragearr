@@ -909,3 +909,6 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.08); }
   }
   .status-chip, .path-chip, .quality-chip { max-width: 180px; }
 }
+
+.manual-link-row { margin-top: 0.5rem; gap: 0.5rem; }
+.manual-link-input { flex: 1; min-width: 0; }

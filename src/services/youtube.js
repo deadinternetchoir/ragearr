@@ -70,6 +70,41 @@ function ytSearch(query, count = 6) {
   });
 }
 
+// Pulls an 11-character video id out of a pasted YouTube link (or a bare id).
+function parseVideoId(input) {
+  const text = String(input || '').trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(text)) return text;
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`); } catch { return null; }
+  const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
+  let id = null;
+  if (host === 'youtu.be') id = u.pathname.split('/')[1];
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (u.pathname === '/watch') id = u.searchParams.get('v');
+    else {
+      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([^/]+)/);
+      if (m) id = m[1];
+    }
+  }
+  return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+}
+
+function videoInfo(videoId) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      YTDLP,
+      ['--skip-download', '--no-playlist', '--print', '%(title)s\t%(channel)s\t%(duration)s', `https://www.youtube.com/watch?v=${videoId}`],
+      { timeout: 45000 },
+      (err, stdout) => {
+        if (err && !stdout) return reject(new Error(`yt-dlp lookup failed: ${err.code === 'ENOENT' ? 'yt-dlp not found' : err.message}`));
+        const [title, channel, duration] = stdout.split('\n')[0].split('\t');
+        if (!title) return reject(new Error('video not found or unavailable'));
+        resolve({ id: videoId, title, channel, duration: parseFloat(duration) || null });
+      }
+    );
+  });
+}
+
 function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -466,7 +501,7 @@ async function pickFirstWithMotion(ranked) {
  * type: 'official_live') - removed entirely, not just disabled, since
  * nothing else in the codebase referenced that type.
  */
-async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
+async function findCandidate({ artist, trackName, durationSec, excludeIds = [] }, rules = {}) {
   // Two searches, merged: the "official music video" wording alone misses some
   // real videos (That Poppy - Money [Official Video] only appears for the plain
   // "artist track" query), and the plain query alone misses others.
@@ -475,7 +510,8 @@ async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
     ytSearch(`${artist} ${trackName}`, 10).catch(() => []),
   ]);
   const seen = new Set();
-  const mvResults = [...mvA, ...mvB].filter((r) => r.id && !seen.has(r.id) && seen.add(r.id));
+  const skip = new Set(excludeIds); // videos the user marked incorrect for this track
+  const mvResults = [...mvA, ...mvB].filter((r) => r.id && !skip.has(r.id) && !seen.has(r.id) && seen.add(r.id));
   const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec, rules);
   const highTierScore = Number(rules.highTierScore ?? 5);
   const mediumTierScore = Number(rules.mediumTierScore ?? 2);
@@ -573,4 +609,4 @@ function probeFileHeight(filePath) {
   });
 }
 
-module.exports = { probeMaxHeight, probeFileHeight, findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };
+module.exports = { parseVideoId, videoInfo, probeMaxHeight, probeFileHeight, findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };

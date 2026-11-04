@@ -101,6 +101,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 // CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a
 // new column needs its own idempotent migration.
 const trackColumns = db.prepare("PRAGMA table_info(tracks)").all().map((c) => c.name);
+const candidateColumns = db.prepare("PRAGMA table_info(candidates)").all().map((c) => c.name);
+if (!candidateColumns.includes('rejected')) {
+  db.exec('ALTER TABLE candidates ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0'); // marked incorrect by the user; kept so searches skip it
+}
+if (!candidateColumns.includes('manual')) {
+  db.exec('ALTER TABLE candidates ADD COLUMN manual INTEGER NOT NULL DEFAULT 0'); // link pasted by the user
+}
 if (!trackColumns.includes('matched_file_path')) {
   db.exec('ALTER TABLE tracks ADD COLUMN matched_file_path TEXT');
 }

@@ -543,7 +543,7 @@ router.delete('/tracks/:id', async (req, res) => {
 // --- Candidates (review queue) ---
 
 router.get('/tracks/:id/candidates', (req, res) => {
-  const rows = db.prepare('SELECT * FROM candidates WHERE track_id = ? ORDER BY score DESC').all(req.params.id);
+  const rows = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND rejected = 0 ORDER BY manual DESC, score DESC').all(req.params.id);
   res.json(rows.map(candidateWithThumbnail));
 });
 
@@ -554,6 +554,38 @@ router.post('/candidates/:id/select', (req, res) => {
   db.prepare('UPDATE candidates SET selected = 1 WHERE id = ?').run(candidate.id);
   db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(candidate.track_id);
   res.json({ ok: true });
+});
+
+// Mark a candidate as incorrect: hidden, never offered again by later searches.
+router.post('/candidates/:id/reject', (req, res) => {
+  const candidate = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
+  if (!candidate) return res.status(404).json({ error: 'not found' });
+  db.prepare('UPDATE candidates SET rejected = 1, selected = 0 WHERE id = ?').run(candidate.id);
+  const left = db.prepare('SELECT COUNT(*) n FROM candidates WHERE track_id = ? AND rejected = 0').get(candidate.track_id).n;
+  db.prepare(
+    "UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('approved', 'candidates_found', 'no_match')"
+  ).run(left ? 'candidates_found' : 'pending', candidate.track_id);
+  res.json({ ok: true });
+});
+
+// Add a video the user picked by hand. Left unselected; Select starts the download as usual.
+router.post('/tracks/:id/candidates/manual', async (req, res) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
+  if (!track) return res.status(404).json({ error: 'not found' });
+  const videoId = youtube.parseVideoId(req.body?.url);
+  if (!videoId) return res.status(400).json({ error: 'That does not look like a YouTube video link' });
+  try {
+    const video = await youtube.videoInfo(videoId);
+    db.prepare('DELETE FROM candidates WHERE track_id = ? AND external_id = ? AND selected = 0').run(track.id, videoId);
+    const info = db.prepare(
+      `INSERT INTO candidates (track_id, source, external_id, title, origin, url, tier, score, metadata_json, manual)
+       VALUES (?, 'youtube', ?, ?, ?, ?, 'high', 100, ?, 1)`
+    ).run(track.id, videoId, video.title, video.channel || 'Manual link', `https://www.youtube.com/watch?v=${videoId}`, JSON.stringify(video));
+    db.prepare("UPDATE tracks SET status = CASE WHEN status IN ('pending','no_match') THEN 'candidates_found' ELSE status END, updated_at = datetime('now') WHERE id = ?").run(track.id);
+    res.json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // The actual missing piece from the original design: selecting a candidate
@@ -693,10 +725,11 @@ async function searchTrack(track) {
       artist: track.artist,
       trackName: track.track_name,
       durationSec: track.duration_sec,
+      excludeIds: db.prepare('SELECT external_id FROM candidates WHERE track_id = ? AND rejected = 1').all(track.id).map((r) => r.external_id),
     }, candidateRules.get());
 
     // A fresh search replaces earlier unreviewed candidates instead of piling up beside them.
-    db.prepare('DELETE FROM candidates WHERE track_id = ? AND selected = 0').run(track.id);
+    db.prepare('DELETE FROM candidates WHERE track_id = ? AND selected = 0 AND rejected = 0 AND manual = 0').run(track.id);
     if (result.video) {
       const thumbnailUrl = thumbnails.youtubeThumbnailUrl(result.video.id);
       db.prepare(

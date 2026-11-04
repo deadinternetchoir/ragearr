@@ -445,6 +445,15 @@ function thumbnailImg(src, label, className) {
   return el('div', { class: className }, img);
 }
 
+// Reload the open candidates panel only if it is still showing this track. A
+// background download finishing must not swap in its candidates while another
+// artist's panel is open.
+async function refreshCandidates(trackId) {
+  if (state.expandedTrackId !== trackId) return;
+  const rows = await api(`/tracks/${trackId}/candidates`);
+  if (state.expandedTrackId === trackId) state.expandedCandidates = rows;
+}
+
 function candidateRow(track, c) {
   const selectBtn = el('button', {
     class: 'secondary',
@@ -474,7 +483,7 @@ function candidateRow(track, c) {
         jobId = result.jobId;
       } catch (err) {
         alert('Download failed to start: ' + err.message);
-        state.expandedCandidates = await api(`/tracks/${track.id}/candidates`);
+        await refreshCandidates(track.id);
         await loadTracks();
         return;
       }
@@ -494,8 +503,25 @@ function candidateRow(track, c) {
         }
         selectBtn.textContent = job.message || (job.status === 'running' ? 'Downloading…' : 'Queued…');
       }
-      state.expandedCandidates = await api(`/tracks/${track.id}/candidates`);
+      await refreshCandidates(track.id);
       await loadTracks();
+    },
+  });
+  const rejectBtn = el('button', {
+    class: 'secondary danger',
+    text: 'Incorrect',
+    title: 'Hide this video and never suggest it again for this track',
+    onclick: async (e) => {
+      e.stopPropagation();
+      rejectBtn.disabled = true;
+      try {
+        await api(`/candidates/${c.id}/reject`, 'POST');
+        await refreshCandidates(track.id);
+        await loadTracks();
+      } catch (err) {
+        alert('Failed to mark incorrect: ' + err.message);
+        rejectBtn.disabled = false;
+      }
     },
   });
   return el(
@@ -506,8 +532,34 @@ function candidateRow(track, c) {
     el('a', { href: c.url, target: '_blank', class: 'candidate-title', text: c.title, onclick: (e) => e.stopPropagation() }),
     el('span', { class: 'candidate-meta', text: c.origin || '' }),
     el('span', { class: 'candidate-meta', text: c.score != null ? String(c.score) : '' }),
-    selectBtn
+    selectBtn,
+    c.selected ? null : rejectBtn
   );
+}
+
+function manualLinkForm(t) {
+  const input = el('input', { type: 'text', placeholder: 'Paste a YouTube link to the correct video', class: 'manual-link-input' });
+  const btn = el('button', {
+    class: 'secondary',
+    text: 'Add link',
+    onclick: async (e) => {
+      e.stopPropagation();
+      if (!input.value.trim()) return;
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      try {
+        await api(`/tracks/${t.id}/candidates/manual`, 'POST', { url: input.value.trim() });
+        await refreshCandidates(t.id);
+        await loadTracks();
+      } catch (err) {
+        alert('Add link failed: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Add link';
+      }
+    },
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+  return el('div', { class: 'row manual-link-row' }, input, btn);
 }
 
 async function toggleTrackCandidates(track) {
@@ -656,7 +708,7 @@ function trackRow(t) {
       searchBtn.disabled = true;
       try {
         await api(`/tracks/${t.id}/search`, 'POST');
-        if (expanded) state.expandedCandidates = await api(`/tracks/${t.id}/candidates`);
+        await refreshCandidates(t.id);
       } catch (err) {
         alert('Search failed: ' + err.message);
       }
@@ -736,7 +788,8 @@ function trackRow(t) {
   if (expanded) {
     const candidateRows = state.expandedCandidates.length
       ? state.expandedCandidates.map((c) => candidateRow(t, c))
-      : [el('p', { class: 'hint', text: 'No candidates yet — try Search.' })];
+      : [el('p', { class: 'hint', text: 'No candidates yet — try Search or paste a link.' })];
+    candidateRows.push(manualLinkForm(t));
     rows.push(
       el(
         'tr',
