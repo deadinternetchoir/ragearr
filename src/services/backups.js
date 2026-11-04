@@ -137,7 +137,7 @@ function restoreBackup(db, input) {
     insertRows(db, 'jobs', backup.tables.jobs);
     db.prepare("UPDATE jobs SET status = 'failed', message = COALESCE(message, 'Marked failed during restore'), updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
     // Nothing is running after a restore, so no track can still be downloading.
-    db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE status = 'downloading'").run();
+    db.prepare("UPDATE tracks SET status = 'download_failed', last_error = 'interrupted by a restart', updated_at = datetime('now') WHERE status = 'downloading'").run();
   });
   restore();
   return { ok: true, restoredAt: new Date().toISOString(), summary };

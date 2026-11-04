@@ -71,7 +71,9 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
       message: `Imported to ${root.name}/${relPath}`,
     });
   } catch (e) {
-    db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(track.id);
+    // Not 'approved': that looks like "queued" and hides the failure.
+    const firstError = String(e.message).split('\n').find((l) => /ERROR/.test(l)) || String(e.message).split('\n').find((l) => l.trim() && !/^WARNING/.test(l)) || e.message;
+    db.prepare("UPDATE tracks SET status = 'download_failed', last_error = ?, updated_at = datetime('now') WHERE id = ?").run(firstError.replace(/^ERROR:\s*/, '').slice(0, 300), track.id);
     notifications.notifyAndLog('onDownloadFailed', { track, candidate, error: e.message });
     throw e;
   } finally {
@@ -563,7 +565,7 @@ router.post('/candidates/:id/reject', (req, res) => {
   db.prepare('UPDATE candidates SET rejected = 1, selected = 0 WHERE id = ?').run(candidate.id);
   const left = db.prepare('SELECT COUNT(*) n FROM candidates WHERE track_id = ? AND rejected = 0').get(candidate.track_id).n;
   db.prepare(
-    "UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('approved', 'candidates_found', 'no_match')"
+    "UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('approved', 'candidates_found', 'no_match', 'download_failed')"
   ).run(left ? 'candidates_found' : 'pending', candidate.track_id);
   res.json({ ok: true });
 });
@@ -618,7 +620,7 @@ router.post('/tracks/:id/download', (req, res) => {
   if (!root) return res.status(400).json({ error: 'No music-video root folder is configured - see PUT /api/settings/library' });
   if (!connForRoot(root)) return res.status(400).json({ error: SSH_NOT_CONFIGURED });
 
-  db.prepare("UPDATE tracks SET status = 'downloading', updated_at = datetime('now') WHERE id = ?").run(track.id);
+  db.prepare("UPDATE tracks SET status = 'downloading', last_error = NULL, updated_at = datetime('now') WHERE id = ?").run(track.id);
   const jobId = jobQueue.enqueue('track_download', track.id, `${track.artist} - ${track.track_name}`);
   res.status(202).json({ jobId });
 });

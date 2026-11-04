@@ -108,6 +108,9 @@ if (!candidateColumns.includes('rejected')) {
 if (!candidateColumns.includes('manual')) {
   db.exec('ALTER TABLE candidates ADD COLUMN manual INTEGER NOT NULL DEFAULT 0'); // link pasted by the user
 }
+if (!trackColumns.includes('last_error')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN last_error TEXT'); // why the last download failed
+}
 if (!trackColumns.includes('matched_file_path')) {
   db.exec('ALTER TABLE tracks ADD COLUMN matched_file_path TEXT');
 }

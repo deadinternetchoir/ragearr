@@ -413,7 +413,7 @@ function statusClass(status) {
   if (status === 'downloading' || status === 'searching' || status === 'approved' || status === 'candidates_found') {
     return 'status-active';
   }
-  if (status === 'no_match' || status === 'failed') return 'status-warn';
+  if (status === 'no_match' || status === 'failed' || status === 'download_failed') return 'status-warn';
   return 'status-muted';
 }
 
@@ -455,10 +455,11 @@ async function refreshCandidates(trackId) {
 }
 
 function candidateRow(track, c) {
+  const retryable = c.selected && ['approved', 'download_failed'].includes(track.status);
   const selectBtn = el('button', {
     class: 'secondary',
-    text: c.selected ? 'Selected' : 'Select',
-    disabled: c.selected ? 'true' : null,
+    text: c.selected ? (retryable ? 'Retry download' : 'Selected') : 'Select',
+    disabled: c.selected && !retryable ? 'true' : null,
     onclick: async (e) => {
       e.stopPropagation();
       selectBtn.textContent = 'Selecting…';
@@ -467,7 +468,7 @@ function candidateRow(track, c) {
         await api(`/candidates/${c.id}/select`, 'POST');
       } catch (err) {
         alert('Select failed: ' + err.message);
-        selectBtn.textContent = 'Select';
+        selectBtn.textContent = retryable ? 'Retry download' : 'Select';
         selectBtn.disabled = false;
         return;
       }
@@ -533,7 +534,7 @@ function candidateRow(track, c) {
     el('span', { class: 'candidate-meta', text: c.origin || '' }),
     el('span', { class: 'candidate-meta', text: c.score != null ? String(c.score) : '' }),
     selectBtn,
-    c.selected ? null : rejectBtn
+    c.selected && !retryable ? null : rejectBtn
   );
 }
 
@@ -772,7 +773,7 @@ function trackRow(t) {
       el('td', { class: 'art-col' }, thumbnailImg(t.thumbnail_url, `${t.artist} - ${t.track_name}`, 'track-thumb')),
       el('td', { class: 'artist-col' }, el('span', { class: 'cell-title', title: t.artist, text: t.artist })),
       el('td', { class: 'title-col' }, el('span', { class: 'cell-title', title: t.track_name, text: t.track_name }), t.album ? el('span', { class: 'cell-subtitle', title: t.album, text: t.album }) : null),
-      el('td', { class: 'status-col' }, el('span', { class: `status-chip ${statusClass(t.status)}`, text: statusLabel(t.status) })),
+      el('td', { class: 'status-col' }, el('span', { class: `status-chip ${statusClass(t.status)}`, title: t.last_error || '', text: statusLabel(t.status) })),
       el('td', { class: 'quality-col' }, el('span', { class: 'quality-chip', title: qualityProfile(t.quality_profile)?.description || '', text: profileName(t.quality_profile) + (t.file_height ? ` · ${t.file_height}p` : '') })),
       el(
         'td',

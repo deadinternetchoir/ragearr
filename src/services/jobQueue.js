@@ -86,7 +86,7 @@ async function processNext() {
 function recoverStuckJobs() {
   // No job is running at this point, so nothing can still be downloading;
   // put those tracks back to the state a failed download leaves them in.
-  db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE status = 'downloading'").run();
+  db.prepare("UPDATE tracks SET status = 'download_failed', last_error = 'interrupted by a restart', updated_at = datetime('now') WHERE status = 'downloading'").run();
   db.prepare("UPDATE jobs SET status = 'failed', message = 'interrupted by a restart', updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
 }
 
