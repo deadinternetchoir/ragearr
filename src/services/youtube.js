@@ -29,6 +29,18 @@ const os = require('os');
 const path = require('path');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+// Optional: a Netscape-format cookies file lets yt-dlp fetch age-restricted videos. It
+// belongs to whoever runs this instance (never committed; lives in the /config volume).
+const COOKIES_PATH = process.env.YTDLP_COOKIES_PATH || '/config/youtube-cookies.txt';
+function cookieArgs() {
+  return fs.existsSync(COOKIES_PATH) ? ['--cookies', COOKIES_PATH] : [];
+}
+function friendlyError(msg) {
+  if (/confirm your age|age-restricted/i.test(msg || '')) {
+    return 'Age-restricted video: add a YouTube cookies file (see README) or mark this candidate Incorrect and pick another. ' + msg;
+  }
+  return msg;
+}
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 // Raised from 5: real reported false negatives (a "marketing image that
 // spins" and a "marketing image with some cuts" both passed as real
@@ -93,7 +105,7 @@ function videoInfo(videoId) {
   return new Promise((resolve, reject) => {
     execFile(
       YTDLP,
-      ['--skip-download', '--no-playlist', '--print', '%(title)s\t%(channel)s\t%(duration)s', `https://www.youtube.com/watch?v=${videoId}`],
+      [...cookieArgs(), '--skip-download', '--no-playlist', '--print', '%(title)s\t%(channel)s\t%(duration)s', `https://www.youtube.com/watch?v=${videoId}`],
       { timeout: 45000 },
       (err, stdout) => {
         if (err && !stdout) return reject(new Error(`yt-dlp lookup failed: ${err.code === 'ENOENT' ? 'yt-dlp not found' : err.message}`));
@@ -558,6 +570,7 @@ function download(videoId, outPathTemplate, qualityProfile) {
     execFile(
       YTDLP,
       [
+        ...cookieArgs(),
         // AV1 excluded deliberately: no released NVIDIA Shield TV model has
         // hardware AV1 decode, and software decode at 4K isn't viable there.
         '-f', format,
@@ -568,7 +581,7 @@ function download(videoId, outPathTemplate, qualityProfile) {
       ],
       { maxBuffer: 20 * 1024 * 1024, timeout: 10 * 60 * 1000 },
       (err, stdout, stderr) => {
-        resolve({ ok: !err, error: err ? stderr || err.message : null });
+        resolve({ ok: !err, error: err ? friendlyError(stderr || err.message) : null });
       }
     );
   });
@@ -580,7 +593,7 @@ function probeMaxHeight(videoId, maxHeight = 2160) {
   return new Promise((resolve) => {
     execFile(
       YTDLP,
-      ['-J', '--no-playlist', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`],
+      [...cookieArgs(), '-J', '--no-playlist', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`],
       { maxBuffer: 50 * 1024 * 1024, timeout: 60000 },
       (err, stdout) => {
         if (err && !stdout) return resolve(null);

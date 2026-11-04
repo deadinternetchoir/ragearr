@@ -84,6 +84,8 @@ If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the
 
 - **Data directory:** `/config` holds SQLite data, settings, generated thumbnails, and app state.
 - **Auth:** API key is accepted via `X-Api-Key`, `Authorization: Bearer <key>`, or `?apikey=...`; user sessions use bearer tokens.
+- **Age-restricted YouTube videos:** yt-dlp needs a logged-in session for these. Optional: export your YouTube cookies (Netscape `cookies.txt`, ideally from a private window of a throwaway account) to `config/youtube-cookies.txt`, or set `YTDLP_COOKIES_PATH`. The file stays in your own `/config` volume and is never part of the repo. Without it, age-restricted candidates fail with a clear message; mark them Incorrect to pick another.
+- **yt-dlp JavaScript runtime:** recent yt-dlp prints a warning without one (e.g. deno); install one in the image if YouTube extraction starts failing.
 - **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials.
 - **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
 - **Download clients:** rTorrent talks over SSH and a local SCGI socket; qBittorrent talks to the WebUI API. See `src/services/downloadClients/README.md`.
