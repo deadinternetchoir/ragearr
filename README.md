@@ -86,7 +86,11 @@ If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the
 - **Auth:** API key is accepted via `X-Api-Key`, `Authorization: Bearer <key>`, or `?apikey=...`; user sessions use bearer tokens.
 - **Age-restricted YouTube videos:** yt-dlp needs a logged-in session for these. Optional: export your YouTube cookies (Netscape `cookies.txt`, ideally from a private window of a throwaway account) to `config/youtube-cookies.txt`, or set `YTDLP_COOKIES_PATH`. The file stays in your own `/config` volume and is never part of the repo. Without it, age-restricted candidates fail with a clear message; mark them Incorrect to pick another.
 - **yt-dlp JavaScript runtime:** recent yt-dlp prints a warning without one (e.g. deno); install one in the image if YouTube extraction starts failing.
-- **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials.
+- **Spotify:** Direct Spotify playlist imports require a Spotify app client ID/secret in Settings. Spotify CSV exports work without credentials. To get your own credentials:
+  1. Log in at <https://developer.spotify.com/dashboard> with any Spotify account and choose **Create app**.
+  2. Give it any name and description. Spotify requires a redirect URI, but Ragearr never uses it, so enter a placeholder such as `http://127.0.0.1:5299/callback`. Tick **Web API**.
+  3. Open the app's **Settings**, copy the **Client ID** and **Client secret**, and paste them into Ragearr under Settings, Spotify.
+  Ragearr uses the client-credentials flow, so it only reads public playlists and never logs in as you or accesses your account. Keep the secret out of the repo.
 - **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
 - **Download clients:** rTorrent talks over SSH and a local SCGI socket; qBittorrent talks to the WebUI API. See `src/services/downloadClients/README.md`.
 - **Library roots:** Configure roots from Settings, one per line as `Name | /path`. A root mounted into the container is written `Name | /path | local` and is accessed directly; any other root is reached over the SSH connection of an SSH-capable download client (rTorrent). qBittorrent can receive concert grabs, but does not provide SSH access, so use local roots with it.
