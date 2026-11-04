@@ -37,3 +37,28 @@ assert(normalized.excludedPhrases[0] === 'four', 'excluded phrase should normali
 assert(normalized.preferredScore === 3, 'numeric settings should normalize');
 
 console.log('Candidate-rule tests OK');
+
+// --- 2026-11 matching fixes (MC Thunder II, audio-only, tiebreak) ---
+{
+  const yt = require('../src/services/youtube');
+  const assertOk = (c, m) => { if (!c) { console.error('FAIL: ' + m); process.exit(1); } };
+  assertOk(!yt.titleMatchesTrack('Electric Callboy - MC Thunder II (Dancing Like a Ninja) OFFICIAL VIDEO', 'MC Thunder'), 'sequel "MC Thunder II" must not match "MC Thunder"');
+  assertOk(yt.titleMatchesTrack('ELECTRIC CALLBOY - MC Thunder (OFFICIAL VIDEO)', 'MC Thunder'), 'original MC Thunder matches');
+  assertOk(yt.titleMatchesTrack('Electric Callboy - MC Thunder II (Dancing Like a Ninja)', 'MC Thunder II'), 'numbered track still matches itself');
+  assertOk(yt.isExcluded("The Lonely Island - I'm So Humble (feat. Adam Levine) - [AUDIO ONLY]", {}, { artist: 'The Lonely Island', trackName: "I'm So Humble" }), 'audio only excluded');
+  const r = yt.rankOfficialMv([
+    { id: 'a', title: 'Money', channel: 'Poppy', duration: 191, views: 1290977 },
+    { id: 'b', title: 'That Poppy - Money [Official Video]', channel: 'wannermusic', duration: 191, views: 928311 },
+  ], 'That Poppy', 'Money', 191, {});
+  assertOk(r[0].video.id === 'b', 'tagged official video wins an equal-score tie');
+  console.log('matching-fix checks passed');
+}
+{
+  const yt = require('../src/services/youtube');
+  const bad = (m) => { console.error('FAIL: ' + m); process.exit(1); };
+  if (yt.titleMatchesTrack('Poppy - BLOODMONEY (Official Music Video)', 'Money')) bad('"Money" must not match inside BLOODMONEY');
+  if (!yt.titleMatchesTrack('That Poppy - Money [Official Video]', 'Money')) bad('whole-word Money matches');
+  if (!yt.titleMatchesTrack('Go Kindergarten (feat. Robyn & Sean Combs & Paul Rudd)', 'Go Kindergarten')) bad('feat. title still matches');
+  if (!yt.isExcluded("01. I'm So Humble (feat. Adam Levine) - Popstar", {}, { artist: 'The Lonely Island', trackName: "I'm So Humble" })) bad('"01." album rip excluded');
+  console.log('whole-word and album-rip checks passed');
+}

@@ -100,12 +100,37 @@ function coreTrackName(name) {
 // score; requiring at least 2 *unique* words before trusting the ratio at
 // all closes the same hole for a track name that's just one word long
 // (nothing left to require agreement on).
+// "MC Thunder II" contains "MC Thunder" but is a different song. A title that
+// continues the track name with a sequel marker (II, III, 2, Pt. 2, Part 2...)
+// is rejected unless the track name itself ends that way.
+const SEQUEL_AFTER_NAME_RE = /^\s*[\(\[]?\s*(?:pt\.?\s*|part\s*)?(?:ii|iii|iv|vi|2|3|4)\b/i;
+function isSequelTitle(candidateTitle, core) {
+  const lower = String(candidateTitle || '').toLowerCase();
+  const name = String(core || '').toLowerCase().trim();
+  if (!name) return false;
+  if (SEQUEL_AFTER_NAME_RE.test(name.slice(-4))) return false; // the track is itself numbered
+  const at = lower.indexOf(name);
+  if (at === -1) return false;
+  return SEQUEL_AFTER_NAME_RE.test(lower.slice(at + name.length));
+}
+
+// "Money" must not match inside "BLOODMONEY": the track name has to appear in the
+// title as whole words (curly/straight apostrophes treated alike).
+function containsAsWholeWords(title, core) {
+  const fold = (x) => String(x || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
+  const name = fold(core).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!name) return true;
+  // If punctuation differs so much that a literal find fails, don't veto on it here.
+  if (!new RegExp(name).test(fold(title))) return true;
+  return new RegExp(`(^|[^a-z0-9])${name}($|[^a-z0-9])`).test(fold(title));
+}
+
 function titleMatchesTrack(candidateTitle, trackName) {
   const core = coreTrackName(trackName);
   const nCore = normalize(core);
   const nCand = normalize(candidateTitle);
   if (!nCore) return false;
-  if (nCand.includes(nCore)) return true;
+  if (nCand.includes(nCore) && containsAsWholeWords(candidateTitle, core)) return !isSequelTitle(candidateTitle, core);
 
   const words = [...new Set(
     core
@@ -124,6 +149,8 @@ function titleMatchesTrack(candidateTitle, trackName) {
 const EXCLUDE_PHRASES = [
   /full album stream/i,
   /official audio/i,
+  /^\s*\d{1,2}\s*[.)]\s/, // "01. Song": album-track rip
+  /\baudio\b/i, // "[AUDIO ONLY]", "(Audio)": no picture, defeats the point of a music video
   /audio stream/i,
   /isolated vocals/i,
   /\blyric/i,
@@ -272,9 +299,10 @@ function rankOfficialMv(results, artist, trackName, trackDurationSec, rules = {}
       else if (diff > 90) score -= 2;
     }
     score += customRuleScore(r.title, rules);
-    ranked.push({ video: r, score, chMatch });
+    ranked.push({ video: r, score, chMatch, isOfficialTag });
   }
-  ranked.sort((a, b) => b.score - a.score);
+  // Equal scores: prefer a title tagged official video, then the more-viewed upload.
+  ranked.sort((a, b) => b.score - a.score || Number(b.isOfficialTag) - Number(a.isOfficialTag) || (b.video.views || 0) - (a.video.views || 0));
   return ranked;
 }
 
@@ -410,6 +438,12 @@ async function hasMotion(videoId) {
 async function pickFirstWithMotion(ranked) {
   const rejected = [];
   for (const candidate of ranked) {
+    // The storyboard scene count is unreliable for real videos (it scales with the
+    // tile resolution YouTube serves: official videos by Poppy and Electric Callboy
+    // scored 4 and 6 against a threshold of 12, while an audio-only upload scored
+    // 36). A title tagged official video from a matching channel or a well-viewed
+    // upload is trusted without it; the check still guards untagged uploads.
+    if (candidate.isOfficialTag && (candidate.chMatch || (candidate.video.views || 0) > 100000)) return { picked: candidate, rejected };
     const ok = await hasMotion(candidate.video.id);
     if (ok) return { picked: candidate, rejected };
     rejected.push(candidate.video.id);
@@ -433,7 +467,15 @@ async function pickFirstWithMotion(ranked) {
  * nothing else in the codebase referenced that type.
  */
 async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
-  const mvResults = await ytSearch(`${artist} ${trackName} official music video`);
+  // Two searches, merged: the "official music video" wording alone misses some
+  // real videos (That Poppy - Money [Official Video] only appears for the plain
+  // "artist track" query), and the plain query alone misses others.
+  const [mvA, mvB] = await Promise.all([
+    ytSearch(`${artist} ${trackName} official music video`, 10),
+    ytSearch(`${artist} ${trackName}`, 10).catch(() => []),
+  ]);
+  const seen = new Set();
+  const mvResults = [...mvA, ...mvB].filter((r) => r.id && !seen.has(r.id) && seen.add(r.id));
   const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec, rules);
   const highTierScore = Number(rules.highTierScore ?? 5);
   const mediumTierScore = Number(rules.mediumTierScore ?? 2);
@@ -462,7 +504,7 @@ async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
   // corroboration that the video is actually associated with the artist,
   // not just a title that happens to score well.
   const mediumTierCandidates = rankedMv.filter(
-    (c) => c.score >= mediumTierScore && !highTierCandidates.includes(c) && (c.chMatch || c.video.views > minFallbackViews)
+    (c) => c.score >= mediumTierScore && !highTierCandidates.includes(c) && (c.chMatch || (c.isOfficialTag && c.video.views > minFallbackViews)) // a well-viewed upload with neither the artist's channel nor an official-video title is usually a fan re-upload
   );
   if (mediumTierCandidates.length > 0) {
     const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates);
