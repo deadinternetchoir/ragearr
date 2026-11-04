@@ -538,4 +538,39 @@ function download(videoId, outPathTemplate, qualityProfile) {
   });
 }
 
-module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };
+// Tallest non-AV1 video format YouTube offers for a video, capped at maxHeight (null if unknown).
+// AV1 is skipped for the same reason download() skips it (no hardware decode on the Shield).
+function probeMaxHeight(videoId, maxHeight = 2160) {
+  return new Promise((resolve) => {
+    execFile(
+      YTDLP,
+      ['-J', '--no-playlist', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`],
+      { maxBuffer: 50 * 1024 * 1024, timeout: 60000 },
+      (err, stdout) => {
+        if (err && !stdout) return resolve(null);
+        try {
+          const info = JSON.parse(stdout);
+          const heights = (info.formats || [])
+            .filter((f) => f.vcodec && f.vcodec !== 'none' && !String(f.vcodec).startsWith('av01') && Number.isFinite(f.height))
+            .map((f) => f.height)
+            .filter((h) => h <= maxHeight);
+          resolve(heights.length ? Math.max(...heights) : null);
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+// Pixel height of the first video stream in a local file, or null.
+function probeFileHeight(filePath) {
+  return new Promise((resolve) => {
+    execFile(FFMPEG, ['-i', filePath], { timeout: 15000 }, (err, stdout, stderr) => {
+      const m = (stderr || '').match(/Stream.*Video.*[ ,](\d{2,5})x(\d{2,5})/);
+      resolve(m ? parseInt(m[2], 10) : null);
+    });
+  });
+}
+
+module.exports = { probeMaxHeight, probeFileHeight, findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };

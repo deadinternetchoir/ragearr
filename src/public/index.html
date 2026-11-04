@@ -68,6 +68,7 @@
                 <option value="have">Have</option>
                 <option value="unmonitored">Unmonitored</option>
               </select>
+              <button id="searchAllBtn" class="secondary" title="Queue a YouTube search for every monitored track that has no candidate yet">Search all</button>
               <button id="scanLibraryBtn" class="secondary">Scan library</button>
               <button id="newListBtn" class="secondary">New list</button>
             </div>
@@ -196,9 +197,24 @@
             <h2>Quality</h2>
             <form id="qualitySettingsForm" class="col">
               <label>Default quality profile <select name="defaultProfileId" id="defaultQualityProfileSelect"></select></label>
+              <label class="check"><input type="checkbox" name="applyToExisting" /> Also apply to tracks already in the list</label>
+              <label class="check"><input type="checkbox" name="upgradesEnabled" id="upgradesEnabledBox" /> Upgrade files automatically: when a taller version of the same video is available (up to the profile's cutoff), replace the file</label>
               <button type="submit">Save</button>
             </form>
             <p class="hint" id="qualityCurrentValue"></p>
+          </div>
+
+          <div class="card">
+            <h2>Automatic search</h2>
+            <form id="autoSearchForm" class="col">
+              <label class="check"><input type="checkbox" name="enabled" id="autoSearchEnabledBox" /> Every hour, search for monitored tracks that have nothing yet (results wait as candidates for you to review; nothing downloads on its own)</label>
+              <label>Retry "no match" tracks after (days) <input name="retryNoMatchDays" type="number" min="1" max="365" /></label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="autoSearchRunBtn">Run now</button>
+              </div>
+            </form>
+            <p class="hint" id="autoSearchResult"></p>
           </div>
 
           <div class="card">

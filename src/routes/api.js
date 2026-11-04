@@ -8,6 +8,7 @@ const prowlarr = require('../services/prowlarr');
 const downloadClients = require('../services/downloadClients');
 const library = require('../services/library');
 const qualityProfiles = require('../services/qualityProfiles');
+const autoSearch = require('../services/autoSearch');
 const candidateRules = require('../services/candidateRules');
 const notifications = require('../services/notifications');
 const thumbnails = require('../services/thumbnails');
@@ -60,9 +61,10 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
     await library.applyLocalOwnership(conn, { dirs: [remoteDir], files: [`${root.path}/${relPath}`] });
 
     const thumbnailUrl = track.thumbnail_url || thumbnails.youtubeThumbnailUrl(candidate.external_id);
+    const fileHeight = await youtube.probeFileHeight(localFile);
     db.prepare(
-      "UPDATE tracks SET status = 'imported', matched_file_path = ?, root_folder_id = ?, thumbnail_url = COALESCE(thumbnail_url, ?), updated_at = datetime('now') WHERE id = ?"
-    ).run(relPath, root.id, thumbnailUrl, track.id);
+      "UPDATE tracks SET status = 'imported', matched_file_path = ?, root_folder_id = ?, thumbnail_url = COALESCE(thumbnail_url, ?), file_height = ?, upgrade_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).run(relPath, root.id, thumbnailUrl, fileHeight, track.id);
     notifications.notifyAndLog('onDownloadImported', {
       track,
       candidate,
@@ -71,6 +73,60 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
   } catch (e) {
     db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(track.id);
     notifications.notifyAndLog('onDownloadFailed', { track, candidate, error: e.message });
+    throw e;
+  } finally {
+    fs.rm(localFile, { force: true }, () => {});
+  }
+});
+
+// Quality upgrade: if the video already used for an imported track is now offered at a
+// taller resolution (up to the profile's cutoff) than the file we hold, download that and
+// replace the file. The old file is only replaced once the new one is fully uploaded and
+// really is taller; any failure leaves the track imported as it was.
+jobQueue.registerHandler('track_upgrade', async (job, progress) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(job.ref_id);
+  if (!track || track.status !== 'imported' || !track.matched_file_path) return;
+  const markChecked = () => db.prepare("UPDATE tracks SET upgrade_checked_at = datetime('now') WHERE id = ?").run(track.id);
+  const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
+  const profile = qualityProfiles.get(track.quality_profile || getDefaultQualityProfileId());
+  const root = rootFolders.rootForStored('music', track.root_folder_id) || rootFolders.defaultRoot('music');
+  const conn = root ? connForRoot(root) : null;
+  if (!candidate || candidate.source !== 'youtube' || !conn || !isSafeRelativeLibraryPath(track.matched_file_path)) return markChecked();
+
+  const finalPath = `${root.path}/${track.matched_file_path}`;
+  let currentHeight = track.file_height;
+  if (!currentHeight && conn.local) {
+    currentHeight = await youtube.probeFileHeight(finalPath);
+    if (currentHeight) db.prepare('UPDATE tracks SET file_height = ? WHERE id = ?').run(currentHeight, track.id);
+  }
+  if (currentHeight && currentHeight >= profile.cutoffHeight) return markChecked();
+
+  progress('checking for a higher resolution…');
+  const available = await youtube.probeMaxHeight(candidate.external_id, profile.cutoffHeight);
+  if (!available || (currentHeight && available <= currentHeight)) return markChecked();
+
+  const localTemplate = path.join(LOCAL_DOWNLOAD_DIR, `up-${track.id}.%(ext)s`);
+  const localFile = path.join(LOCAL_DOWNLOAD_DIR, `up-${track.id}.mkv`);
+  const tmpRemote = `${finalPath}.ragearr-upgrade`;
+  try {
+    fs.mkdirSync(LOCAL_DOWNLOAD_DIR, { recursive: true });
+    progress(`downloading ${available}p…`);
+    const dl = await youtube.download(candidate.external_id, localTemplate, profile);
+    if (!dl.ok) throw new Error(dl.error || 'yt-dlp download failed');
+    const newHeight = await youtube.probeFileHeight(localFile);
+    if (!newHeight || (currentHeight && newHeight <= currentHeight)) {
+      markChecked();
+      return; // not actually better - keep the existing file
+    }
+    progress('replacing the file…');
+    await scpUpload(conn, localFile, tmpRemote, { timeout: 10 * 60 * 1000 });
+    await sshExec(conn, `mv -f ${shellQuote(tmpRemote)} ${shellQuote(finalPath)}`);
+    await library.applyLocalOwnership(conn, { dirs: [], files: [finalPath] });
+    db.prepare("UPDATE tracks SET file_height = ?, upgrade_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(newHeight, track.id);
+    notifications.notifyAndLog('onDownloadImported', { track, candidate, message: `Upgraded ${currentHeight || '?'}p to ${newHeight}p` });
+  } catch (e) {
+    await sshExec(conn, `rm -f ${shellQuote(tmpRemote)}`).catch(() => {});
+    markChecked(); // try again next week rather than every hour
     throw e;
   } finally {
     fs.rm(localFile, { force: true }, () => {});
@@ -627,10 +683,10 @@ router.get('/system/health', async (req, res) => {
 // Search YouTube for a candidate music video for one track, and record the
 // result as a candidate row (does not download anything — that's a separate
 // approve/download step, see the review-queue design in README.md).
-router.post('/tracks/:id/search', async (req, res) => {
-  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
-  if (!track) return res.status(404).json({ error: 'not found' });
-
+// Searches YouTube for one track and records the result as a candidate (does not
+// download). Shared by the Search button, "Search all" and the hourly auto-search.
+// Throws on a yt-dlp failure after putting the track back to 'pending'.
+async function searchTrack(track) {
   db.prepare("UPDATE tracks SET status = 'searching', updated_at = datetime('now') WHERE id = ?").run(track.id);
   try {
     const result = await youtube.findCandidate({
@@ -639,6 +695,8 @@ router.post('/tracks/:id/search', async (req, res) => {
       durationSec: track.duration_sec,
     }, candidateRules.get());
 
+    // A fresh search replaces earlier unreviewed candidates instead of piling up beside them.
+    db.prepare('DELETE FROM candidates WHERE track_id = ? AND selected = 0').run(track.id);
     if (result.video) {
       const thumbnailUrl = thumbnails.youtubeThumbnailUrl(result.video.id);
       db.prepare(
@@ -661,7 +719,7 @@ router.post('/tracks/:id/search', async (req, res) => {
     }
 
     const newStatus = result.tier === 'none' ? 'no_match' : 'candidates_found';
-    db.prepare("UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(newStatus, track.id);
+    db.prepare("UPDATE tracks SET status = ?, last_searched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(newStatus, track.id);
     if (result.video) {
       notifications.notifyAndLog('onCandidateFound', {
         track,
@@ -674,11 +732,46 @@ router.post('/tracks/:id/search', async (req, res) => {
     } else {
       notifications.notifyAndLog('onNoMatch', { track, message: 'Automatic search did not find a usable music video.' });
     }
-    res.json({ track_id: track.id, tier: result.tier, video: result.video });
+    return result;
   } catch (e) {
     db.prepare("UPDATE tracks SET status = 'pending', updated_at = datetime('now') WHERE id = ?").run(track.id);
+    throw e;
+  }
+}
+
+router.post('/tracks/:id/search', async (req, res) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
+  if (!track) return res.status(404).json({ error: 'not found' });
+  try {
+    const result = await searchTrack(track);
+    res.json({ track_id: track.id, tier: result.tier, video: result.video });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Background search job (used by Search all and the hourly auto-search). Skips a track
+// that was approved, downloaded or removed since it was queued.
+jobQueue.registerHandler('track_search', async (job) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(job.ref_id);
+  if (!track || !['pending', 'no_match'].includes(track.status)) return;
+  await searchTrack(track);
+  await new Promise((r) => setTimeout(r, 1500)); // be gentle with YouTube during long runs
+});
+
+// Queue a search for every monitored track in the list (or all lists) that has nothing
+// yet: never searched, or searched with no match. Results land as candidates to review.
+router.post('/tracks/search-all', (req, res) => {
+  const listId = req.body?.wanted_list_id;
+  const rows = db
+    .prepare(
+      `SELECT id, artist, track_name FROM tracks
+       WHERE monitored = 1 AND status IN ('pending', 'no_match')
+       ${listId ? 'AND wanted_list_id = ?' : ''} ORDER BY id`
+    )
+    .all(...(listId ? [listId] : []));
+  for (const t of rows) jobQueue.enqueue('track_search', t.id, `Search: ${t.artist} - ${t.track_name}`);
+  res.json({ queued: rows.length });
 });
 
 // --- Settings ---
@@ -720,15 +813,38 @@ router.post('/settings/prowlarr/test', adminOnly, async (req, res) => {
 router.get('/quality-profiles', (req, res) => {
   res.json({
     defaultProfileId: getDefaultQualityProfileId(),
+    upgradesEnabled: (settings.get('quality') || {}).upgradesEnabled !== false,
     profiles: qualityProfiles.all(),
   });
 });
 
 router.put('/settings/quality', (req, res) => {
-  const { defaultProfileId } = req.body;
+  const { defaultProfileId, upgradesEnabled, applyToExisting } = req.body;
   if (!qualityProfiles.isValid(defaultProfileId)) return res.status(400).json({ error: 'unknown quality profile' });
-  settings.set('quality', { defaultProfileId });
-  res.json({ ok: true });
+  const current = settings.get('quality') || {};
+  settings.set('quality', {
+    ...current,
+    defaultProfileId,
+    upgradesEnabled: upgradesEnabled === undefined ? current.upgradesEnabled : Boolean(upgradesEnabled),
+  });
+  let updated = 0;
+  if (applyToExisting) {
+    updated = db.prepare('UPDATE tracks SET quality_profile = ?, upgrade_checked_at = NULL WHERE quality_profile != ?').run(defaultProfileId, defaultProfileId).changes;
+  }
+  res.json({ ok: true, updated });
+});
+
+router.get('/settings/auto-search', (req, res) => {
+  res.json(autoSearch.getConfig());
+});
+
+router.put('/settings/auto-search', (req, res) => {
+  res.json(autoSearch.setConfig(req.body || {}));
+});
+
+// Run the hourly pass now (searches for new tracks, retries old no-matches, checks upgrades).
+router.post('/auto-search/run', (req, res) => {
+  res.json(autoSearch.run());
 });
 
 router.get('/settings/candidate-rules', (req, res) => {

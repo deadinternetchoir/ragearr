@@ -55,7 +55,13 @@ function updateProgress(jobId, message) {
 
 async function processNext() {
   if (running) return; // one at a time, and only one loop iteration in flight
-  const job = db.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1").get();
+  // Downloads jump ahead of bulk work: a long "search everything" run must not hold up a
+  // download you just asked for. Then searches, then (slowest, least urgent) upgrades.
+  const job = db
+    .prepare(
+      "SELECT * FROM jobs WHERE status = 'queued' ORDER BY CASE type WHEN 'track_search' THEN 1 WHEN 'track_upgrade' THEN 2 ELSE 0 END, id ASC LIMIT 1"
+    )
+    .get();
   if (!job) return;
 
   running = true;

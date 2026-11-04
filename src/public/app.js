@@ -721,7 +721,7 @@ function trackRow(t) {
       el('td', { class: 'artist-col' }, el('span', { class: 'cell-title', title: t.artist, text: t.artist })),
       el('td', { class: 'title-col' }, el('span', { class: 'cell-title', title: t.track_name, text: t.track_name }), t.album ? el('span', { class: 'cell-subtitle', title: t.album, text: t.album }) : null),
       el('td', { class: 'status-col' }, el('span', { class: `status-chip ${statusClass(t.status)}`, text: statusLabel(t.status) })),
-      el('td', { class: 'quality-col' }, el('span', { class: 'quality-chip', title: qualityProfile(t.quality_profile)?.description || '', text: profileName(t.quality_profile) })),
+      el('td', { class: 'quality-col' }, el('span', { class: 'quality-chip', title: qualityProfile(t.quality_profile)?.description || '', text: profileName(t.quality_profile) + (t.file_height ? ` · ${t.file_height}p` : '') })),
       el(
         'td',
         { class: 'file-col' },
@@ -1314,18 +1314,63 @@ async function loadQualitySettings() {
   state.defaultQualityProfileId = cfg.defaultProfileId || 'balanced_1080p';
   fillQualitySelect(document.getElementById('addTrackQualityProfile'), state.defaultQualityProfileId);
   fillQualitySelect(document.getElementById('defaultQualityProfileSelect'), state.defaultQualityProfileId);
+  document.getElementById('upgradesEnabledBox').checked = cfg.upgradesEnabled !== false;
   const current = qualityProfile(state.defaultQualityProfileId);
   document.getElementById('qualityCurrentValue').textContent = current
     ? `Current default: ${current.name} - ${current.description}`
     : 'No default quality profile configured.';
 }
 
+async function loadAutoSearchSettings() {
+  const cfg = await api('/settings/auto-search');
+  document.getElementById('autoSearchEnabledBox').checked = cfg.enabled;
+  document.getElementById('autoSearchForm').retryNoMatchDays.value = cfg.retryNoMatchDays;
+}
+
+document.getElementById('autoSearchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  await api('/settings/auto-search', 'PUT', { enabled: form.enabled.checked, retryNoMatchDays: form.retryNoMatchDays.value });
+  document.getElementById('autoSearchResult').textContent = 'Saved.';
+});
+
+document.getElementById('autoSearchRunBtn').addEventListener('click', async () => {
+  const out = document.getElementById('autoSearchResult');
+  try {
+    const r = await api('/auto-search/run', 'POST', {});
+    out.textContent = `Queued ${r.searches} new search(es), ${r.retries} retr${r.retries === 1 ? 'y' : 'ies'}, ${r.upgrades} upgrade check(s). They run one at a time in the background.`;
+  } catch (err) {
+    out.textContent = 'Failed: ' + err.message;
+  }
+});
+
+document.getElementById('searchAllBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('searchAllBtn');
+  const out = document.getElementById('scanLibraryResult');
+  btn.disabled = true;
+  try {
+    const r = await api('/tracks/search-all', 'POST', { wanted_list_id: state.currentListId || undefined });
+    out.hidden = false;
+    out.textContent = r.queued
+      ? `Queued ${r.queued} search(es). They run in the background, one at a time; refresh the list to see candidates appear.`
+      : 'Nothing to search: every monitored track already has a candidate or a file.';
+  } catch (err) {
+    alert('Search all failed: ' + err.message);
+  }
+  btn.disabled = false;
+});
+
 document.getElementById('qualitySettingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
-  await api('/settings/quality', 'PUT', { defaultProfileId: form.defaultProfileId.value });
+  const r = await api('/settings/quality', 'PUT', {
+    defaultProfileId: form.defaultProfileId.value,
+    upgradesEnabled: form.upgradesEnabled.checked,
+    applyToExisting: form.applyToExisting.checked,
+  });
+  form.applyToExisting.checked = false;
   await loadQualitySettings();
-  alert('Saved.');
+  alert(r.updated ? `Saved. ${r.updated} existing track(s) switched to this profile.` : 'Saved.');
 });
 
 function listToText(values) {
@@ -1528,6 +1573,7 @@ async function loadJobs() {
 (async function init() {
   await loadAuthStatus();
   await loadQualitySettings();
+  await loadAutoSearchSettings();
   await loadWantedLists();
   await loadTracks();
   await loadGrabs();

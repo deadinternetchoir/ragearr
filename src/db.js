@@ -113,6 +113,15 @@ if (!trackColumns.includes('quality_profile')) {
 if (!trackColumns.includes('thumbnail_url')) {
   db.exec('ALTER TABLE tracks ADD COLUMN thumbnail_url TEXT');
 }
+if (!trackColumns.includes('file_height')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN file_height INTEGER'); // pixel height of the imported file, for quality upgrades
+}
+if (!trackColumns.includes('upgrade_checked_at')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN upgrade_checked_at TEXT');
+}
+if (!trackColumns.includes('last_searched_at')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN last_searched_at TEXT');
+}
 if (!trackColumns.includes('root_folder_id')) {
   db.exec('ALTER TABLE tracks ADD COLUMN root_folder_id TEXT');
 }

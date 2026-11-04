@@ -4,6 +4,7 @@ const path = require('path');
 const db = require('./db');
 const apiRouter = require('./routes/api');
 const jobQueue = require('./services/jobQueue');
+const autoSearch = require('./services/autoSearch');
 const thumbnails = require('./services/thumbnails');
 const users = require('./services/users');
 
@@ -98,5 +99,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Ragearr listening on port ${PORT}`);
+  autoSearch.start();
   if (!API_KEY) console.warn('RAGEARR_API_KEY is not set; API auth is disabled.');
 });
