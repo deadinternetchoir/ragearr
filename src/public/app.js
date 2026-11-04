@@ -325,6 +325,35 @@ function renderImportListPreview(preview) {
   );
 }
 
+function clearImportList() {
+  const form = document.getElementById('importListForm');
+  form.reset();
+  state.importListPreview = null;
+  document.getElementById('importListSummary').textContent = '';
+  document.getElementById('importListPreview').innerHTML = '';
+  document.getElementById('importListSubmitBtn').disabled = true;
+}
+
+document.getElementById('importListClearBtn').addEventListener('click', clearImportList);
+
+// Choosing a file loads its text into the pasted-list box (read in the browser; nothing is uploaded until Preview/Import).
+document.getElementById('importListFile').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const form = document.getElementById('importListForm');
+  try {
+    form.text.value = await file.text();
+  } catch (err) {
+    alert('Could not read file: ' + err.message);
+    return;
+  }
+  if (!form.name.value.trim()) form.name.value = file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+  state.importListPreview = null;
+  document.getElementById('importListSubmitBtn').disabled = true;
+  document.getElementById('importListSummary').textContent = `Loaded ${file.name}. Click Preview.`;
+  document.getElementById('importListPreview').innerHTML = '';
+});
+
 document.getElementById('importListForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = importListPayload();
