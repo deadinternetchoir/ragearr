@@ -12,7 +12,6 @@
 //     Videos that someone added to the collection by hand are left alone.
 const db = require('../db');
 const settings = require('./settings');
-const importLists = require('./importLists');
 const library = require('./library');
 const rootFolders = require('./rootFolders');
 const downloadClients = require('./downloadClients');
@@ -27,7 +26,23 @@ const OUTAGE_MIN_COUNT = 5;
 let running = false;
 let timer = null;
 
-const keyFor = (artist, title) => importLists.keyFor({ artist, track_name: title });
+// Matching key for "is this the same song". Tolerates the differences between Plex tags and
+// imported lists: curly versus straight quotes, unicode hyphens, case, punctuation, and a
+// "feat." credit sitting in the artist or in the title.
+const FEAT_IN_ARTIST = /\s+(feat\.?|ft\.?|featuring)\s.*$/;
+const FEAT_IN_TITLE = /\s*[(\[]\s*(feat\.?|ft\.?|featuring)\b[^)\]]*[)\]]/g;
+function simplify(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201b\u0060\u00b4]/g, "'")
+    .replace(/[\u2010-\u2015]/g, '-');
+}
+function keyFor(artist, title) {
+  const a = simplify(artist).replace(FEAT_IN_ARTIST, '');
+  const t = simplify(title).replace(FEAT_IN_TITLE, '').replace(FEAT_IN_ARTIST, '');
+  const clean = (x) => x.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return `${clean(a)}::${clean(t)}`;
+}
 const log = (action, detail) => db.prepare('INSERT INTO plex_log (action, detail) VALUES (?, ?)').run(action, typeof detail === 'string' ? detail : JSON.stringify(detail));
 
 function defaultProfileId() {
@@ -337,4 +352,4 @@ function start() {
   loop();
 }
 
-module.exports = { run, status, start, syncedLists, MAX_DELETES_PER_RUN, MISSING_RUNS_BEFORE_DELETE };
+module.exports = { keyFor, run, status, start, syncedLists, MAX_DELETES_PER_RUN, MISSING_RUNS_BEFORE_DELETE };

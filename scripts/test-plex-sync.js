@@ -110,6 +110,14 @@ async function main() {
   assert(trackByTitle('Five'), 'track entry stays');
   assert(db.prepare('SELECT COUNT(*) n FROM plex_members WHERE track_id = ?').get(trackByTitle('Five').id).n === 0, 'no longer a member');
 
+  // the same song written differently in Plex reuses the existing track
+  const k = plexSync.keyFor;
+  assert(k('Bring Me the Horizon ft. Lil Uzi Vert & Daryl Palumbo', 'AmEN!') === k('Bring Me The Horizon', 'AmEN! (feat. Lil Uzi Vert and Daryl Palumbo)'), 'feat. in artist or title is ignored');
+  assert(k('Silverstein', 'Don\u2019t Let Me Get Too Low') === k('Silverstein', "Don't Let Me Get Too Low"), 'curly apostrophe is ignored');
+  assert(k('Bring Me the Horizon', 'Kool\u2010Aid') === k('Bring Me The Horizon', 'Kool-Aid'), 'unicode hyphen is ignored');
+  assert(k('Enter Shikari', 'Spaceship Earth (I. Avec Abandon)') !== k('Enter Shikari', 'Spaceship Earth (II. Angoscioso)'), 'different parts stay different');
+  assert(k('Silverstein', 'Drain The Blood') === k('Silverstein feat. Rory Rodriguez', 'Drain the Blood'), 'case and credit differences match');
+
   // song added to the playlist later becomes a track
   state.playlists.P1.push(song(299, 'New', 'Eight'));
   state.songs.add('299');
