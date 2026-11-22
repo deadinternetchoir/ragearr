@@ -338,8 +338,10 @@ router.get('/tracks', (req, res) => {
   let sql = 'SELECT * FROM tracks WHERE 1=1';
   const params = [];
   if (wanted_list_id) {
-    sql += ' AND wanted_list_id = ?';
-    params.push(wanted_list_id);
+    // A list shows its own tracks plus the tracks a followed Plex playlist includes (a song
+    // already tracked under another list is one track, listed here through plex_members).
+    sql += ' AND (wanted_list_id = ? OR id IN (SELECT track_id FROM plex_members WHERE wanted_list_id = ?))';
+    params.push(wanted_list_id, wanted_list_id);
   }
   if (status) {
     sql += ' AND status = ?';
@@ -867,9 +869,9 @@ router.post('/tracks/search-all', (req, res) => {
     .prepare(
       `SELECT id, artist, track_name FROM tracks
        WHERE monitored = 1 AND status IN ('pending', 'no_match')
-       ${listId ? 'AND wanted_list_id = ?' : ''} ORDER BY id`
+       ${listId ? 'AND (wanted_list_id = ? OR id IN (SELECT track_id FROM plex_members WHERE wanted_list_id = ?))' : ''} ORDER BY id`
     )
-    .all(...(listId ? [listId] : []));
+    .all(...(listId ? [listId, listId] : []));
   for (const t of rows) jobQueue.enqueue('track_search', t.id, `Search: ${t.artist} - ${t.track_name}`);
   res.json({ queued: rows.length });
 });

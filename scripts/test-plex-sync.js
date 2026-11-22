@@ -251,6 +251,13 @@ async function routes() {
     await request(port, 'POST', `/api/tracks/${manual}/search`);
     assert(db.prepare('SELECT status FROM tracks WHERE id = ?').get(manual).status === 'candidates_found', 'a list without auto-approve still waits');
 
+    // a list shows tracks it follows through Plex even when they belong to another list
+    const shared = db.prepare("INSERT INTO tracks (wanted_list_id, artist, track_name, status) VALUES (1, 'S', 'Shared', 'pending')").run().lastInsertRowid;
+    db.prepare('INSERT INTO plex_members (wanted_list_id, track_id) VALUES (?, ?)').run(created.body.id, shared);
+    const listed = await request(port, 'GET', `/api/tracks?wanted_list_id=${created.body.id}`);
+    assert(listed.body.some((t) => t.id === shared), 'list view includes tracks that belong to it through Plex');
+    assert(!(await request(port, 'GET', '/api/tracks?wanted_list_id=1')).body.every((t) => t.id !== shared), 'and still shows them under their own list');
+
     // Incorrect on the video already in the library: file trashed, replacement searched
     const full = path.join(rootPath, 'H', 'H - High.mkv');
     fs.mkdirSync(path.dirname(full), { recursive: true });
