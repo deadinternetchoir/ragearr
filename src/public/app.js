@@ -180,16 +180,24 @@ function el(tag, attrs, ...children) {
 
 const VIEW_TITLES = { tracks: 'Tracks', concerts: 'Concerts', activity: 'Activity', settings: 'Settings' };
 
+// The open page lives in the URL hash (#settings), so a refresh or the back button keeps it.
+function showView(name) {
+  if (!VIEW_TITLES[name]) name = 'tracks';
+  document.querySelectorAll('.sidebar-item').forEach((i) => i.classList.toggle('active', i.dataset.view === name));
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
+  document.getElementById('pageTitle').textContent = VIEW_TITLES[name];
+}
+
 document.querySelectorAll('.sidebar-item').forEach((item) => {
   item.querySelector('a').addEventListener('click', (e) => {
     e.preventDefault();
-    document.querySelectorAll('.sidebar-item').forEach((i) => i.classList.remove('active'));
-    document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-    item.classList.add('active');
-    document.getElementById('view-' + item.dataset.view).classList.add('active');
-    document.getElementById('pageTitle').textContent = VIEW_TITLES[item.dataset.view] || '';
+    showView(item.dataset.view);
+    history.pushState(null, '', '#' + item.dataset.view);
   });
 });
+
+window.addEventListener('popstate', () => showView(location.hash.slice(1)));
+showView(location.hash.slice(1));
 
 function renderCurrentUser() {
   const chip = document.getElementById('userChip');
