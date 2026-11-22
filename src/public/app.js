@@ -1257,6 +1257,7 @@ async function loadPlexSettings() {
     : 'Plex token is NOT set. Add RAGEARR_PLEX_TOKEN to the server environment file and restart Ragearr.';
   const status = await api('/plex/status');
   document.getElementById('plexSyncStatus').textContent = plexStatusText(status);
+  if (cfg.tokenSet && cfg.baseUrl) await refreshPlexConnection(false);
 }
 
 async function loadPlexPlaylists() {
@@ -1311,14 +1312,13 @@ document.getElementById('plexSettingsForm').addEventListener('submit', async (e)
   await loadPlexSettings();
 });
 
-document.getElementById('testPlexBtn').addEventListener('click', async () => {
+// Fills the library chooser and the playlist list from Plex. Runs on page load when Plex is
+// configured, and from the Test button.
+async function refreshPlexConnection(showResult) {
   const form = document.getElementById('plexSettingsForm');
-  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim() });
-  const btn = document.getElementById('testPlexBtn');
-  btn.disabled = true;
   try {
     const result = await api('/plex/test', 'POST');
-    renderConnectionResult('plexTestResult', 'ok', `Connected to ${result.server} (Plex ${result.version}).`);
+    if (showResult) renderConnectionResult('plexTestResult', 'ok', `Connected to ${result.server} (Plex ${result.version}).`);
     const select = form.videoSectionKey;
     const keep = select.value;
     select.innerHTML = '';
@@ -1327,8 +1327,17 @@ document.getElementById('testPlexBtn').addEventListener('click', async () => {
     select.value = keep;
     await loadPlexPlaylists();
   } catch (err) {
-    renderConnectionResult('plexTestResult', 'fail', err.message);
+    if (showResult) renderConnectionResult('plexTestResult', 'fail', err.message);
+    else document.getElementById('plexPlaylists').textContent = 'Could not reach Plex: ' + err.message;
   }
+}
+
+document.getElementById('testPlexBtn').addEventListener('click', async () => {
+  const form = document.getElementById('plexSettingsForm');
+  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim() });
+  const btn = document.getElementById('testPlexBtn');
+  btn.disabled = true;
+  await refreshPlexConnection(true);
   btn.disabled = false;
 });
 
