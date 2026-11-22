@@ -171,6 +171,19 @@ async function main() {
   assert(refused && /unsafe/.test(refused), 'unsafe path refused');
 }
 
+async function restartRecovery() {
+  const add = (type, status) => db.prepare('INSERT INTO jobs (type, ref_id, label, status) VALUES (?, 1, ?, ?)').run(type, `${type}-${status}`, status).lastInsertRowid;
+  const q = add('track_search', 'queued');
+  const r = add('track_search', 'running');
+  const d = add('track_download', 'queued');
+  jobQueue.recoverStuckJobs();
+  const st = (id) => db.prepare('SELECT status FROM jobs WHERE id = ?').get(id).status;
+  assert(st(q) === 'queued', 'a queued search survives a restart');
+  assert(st(r) === 'failed', 'a running job is marked failed');
+  assert(st(d) === 'failed', 'a queued download is marked failed');
+  db.prepare('DELETE FROM jobs WHERE id IN (?, ?, ?)').run(q, r, d);
+}
+
 async function guards() {
   // many songs missing at once looks like a broken Plex
   const { state, client, song } = fakePlex();
@@ -285,6 +298,7 @@ async function routes() {
   try {
     await main();
     await guards();
+    await restartRecovery();
     await routes();
     console.log('plex sync tests passed');
     process.exit(0);

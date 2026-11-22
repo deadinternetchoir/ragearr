@@ -87,7 +87,18 @@ function recoverStuckJobs() {
   // No job is running at this point, so nothing can still be downloading;
   // put those tracks back to the state a failed download leaves them in.
   db.prepare("UPDATE tracks SET status = 'download_failed', last_error = 'interrupted by a restart', updated_at = datetime('now') WHERE status = 'downloading'").run();
-  db.prepare("UPDATE jobs SET status = 'failed', message = 'interrupted by a restart', updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
+  // Anything running cannot finish, and a queued download belongs to a track just released above.
+  // Queued searches and upgrade checks are cheap to run and safe to repeat, so they stay queued:
+  // a redeploy must not throw away hundreds of waiting searches (see resume()).
+  db.prepare(
+    `UPDATE jobs SET status = 'failed', message = 'interrupted by a restart', updated_at = datetime('now')
+     WHERE status = 'running' OR (status = 'queued' AND type NOT IN ('track_search', 'track_upgrade'))`
+  ).run();
 }
 
-module.exports = { registerHandler, enqueue, processNext, recoverStuckJobs };
+// Starts working through jobs that stayed queued across a restart.
+function resume() {
+  schedule();
+}
+
+module.exports = { registerHandler, enqueue, processNext, recoverStuckJobs, resume };
