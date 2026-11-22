@@ -91,6 +91,13 @@ If `RAGEARR_API_KEY` is not configured and no users exist yet, Ragearr opens the
   2. Give it any name and description. Spotify requires a redirect URI, but Ragearr never uses it, so enter a placeholder such as `http://127.0.0.1:5299/callback`. Tick **Web API**.
   3. Open the app's **Settings**, copy the **Client ID** and **Client secret**, and paste them into Ragearr under Settings, Spotify.
   Ragearr uses the client-credentials flow, so it only reads public playlists and never logs in as you or accesses your account. Keep the secret out of the repo.
+- **Plex sync (optional):** Ragearr can follow Plex music playlists and keep a matching collection of videos in a Plex Music Videos library.
+  1. Set `RAGEARR_PLEX_TOKEN` in the container environment (an env file, never the repo). The token needs to read your playlists and edit the Music Videos library.
+  2. In Settings, Plex, enter the Plex address, test the connection, choose the Music Videos library and tick the playlists to follow. Each ticked playlist becomes a wanted list with a collection of the same name.
+  3. Every 15 minutes (or on "Sync now") Ragearr adds new playlist songs as wanted tracks, adds imported videos to the collection, and takes a video out of the collection when its song leaves the playlist (the file stays).
+  4. A list with **Auto-approve** on downloads high-confidence matches without review. Medium matches and misses wait under the "Needs review" filter.
+  5. A song deleted from the Plex music library is removed from Ragearr after two syncs in a row both find it gone. Its video moves to `.trash` inside the library root and is purged after 30 days. Nothing is deleted if Plex fails, if many songs vanish at once, or if more than 10 are due in one run (use "Allow bulk delete" through `POST /api/plex/sync` with `{"allowBulkDelete": true}`).
+  6. **Incorrect** on a video that is already in the library moves the file to `.trash` and searches again for a replacement.
 - **Prowlarr:** Used for full concert/live-show release search, not per-track music-video search.
 - **Download clients:** rTorrent talks over SSH and a local SCGI socket; qBittorrent talks to the WebUI API. See `src/services/downloadClients/README.md`.
 - **Library roots:** Configure roots from Settings, one per line as `Name | /path`. A root mounted into the container is written `Name | /path | local` and is accessed directly; any other root is reached over the SSH connection of an SSH-capable download client (rTorrent). qBittorrent can receive concert grabs, but does not provide SSH access, so use local roots with it.
@@ -125,6 +132,7 @@ npm run test:backup-integrity
 npm run test:candidate-scoring
 npm run test:import-edge-cases
 npm run test:review-followups
+npm run test:plex-sync
 ```
 
 ## Architecture

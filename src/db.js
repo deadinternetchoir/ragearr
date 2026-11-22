@@ -184,4 +184,39 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 `);
 
+// Plex sync (services/plexSync.js). Added after deployed instances existed, so
+// each column is an ALTER guarded by a column check, like the ones above.
+const listColumns = db.prepare('PRAGMA table_info(wanted_lists)').all().map((c) => c.name);
+for (const [name, ddl] of [
+  ['plex_sync', 'ALTER TABLE wanted_lists ADD COLUMN plex_sync INTEGER NOT NULL DEFAULT 0'], // 1 = follows a Plex playlist
+  ['plex_playlist_key', 'ALTER TABLE wanted_lists ADD COLUMN plex_playlist_key TEXT'], // Plex playlist ratingKey
+  ['plex_collection', 'ALTER TABLE wanted_lists ADD COLUMN plex_collection TEXT'], // Plex collection title (defaults to the list name)
+  ['auto_approve', 'ALTER TABLE wanted_lists ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0'], // 1 = high-tier matches download unattended
+]) {
+  if (!listColumns.includes(name)) db.exec(ddl);
+}
+const plexTrackColumns = db.prepare('PRAGMA table_info(tracks)').all().map((c) => c.name);
+if (!plexTrackColumns.includes('plex_rating_key')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN plex_rating_key TEXT'); // the song in the Plex music library
+}
+if (!plexTrackColumns.includes('plex_missing')) {
+  db.exec('ALTER TABLE tracks ADD COLUMN plex_missing INTEGER NOT NULL DEFAULT 0'); // consecutive syncs where Plex no longer had the song
+}
+db.exec(`
+-- Which tracks belong to which synced list. A song can sit in several Plex playlists but is
+-- one track row, so list membership lives here and not in tracks.wanted_list_id.
+CREATE TABLE IF NOT EXISTS plex_members (
+  wanted_list_id INTEGER NOT NULL,
+  track_id INTEGER NOT NULL,
+  PRIMARY KEY (wanted_list_id, track_id)
+);
+-- What the sync did, newest last. Deletions are recorded here before they happen.
+CREATE TABLE IF NOT EXISTS plex_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (datetime('now')),
+  action TEXT NOT NULL,
+  detail TEXT
+);
+`);
+
 module.exports = db;

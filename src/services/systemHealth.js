@@ -102,6 +102,21 @@ async function checkRemoteFfmpeg() {
   }
 }
 
+// Reports on the last Plex sync without calling Plex. Left out entirely until Plex sync is on.
+function checkPlex() {
+  const settings = require('./settings');
+  const cfg = settings.get('plex') || {};
+  if (!cfg.enabled) return null;
+  if (!process.env.RAGEARR_PLEX_TOKEN) return check('plex', 'Plex sync', 'fail', 'RAGEARR_PLEX_TOKEN is not set');
+  const last = settings.get('plexSyncStatus');
+  if (!last) return check('plex', 'Plex sync', 'warn', 'Enabled, but no sync has run yet');
+  if (!last.ok) return check('plex', 'Plex sync', 'fail', `Last sync failed: ${last.error}`);
+  const ageMin = (Date.now() - Date.parse(last.at)) / 60000;
+  if (ageMin > 3 * (parseInt(cfg.intervalMinutes, 10) || 15) + 5) return check('plex', 'Plex sync', 'warn', `Last sync was ${Math.round(ageMin)} minutes ago`);
+  if (last.warnings && last.warnings.length) return check('plex', 'Plex sync', 'warn', last.warnings[0]);
+  return check('plex', 'Plex sync', 'ok', `Last sync ${last.at}`);
+}
+
 function checkSqlite() {
   try {
     const quick = db.prepare('PRAGMA quick_check').get();
@@ -148,6 +163,8 @@ async function run({ apiAuthConfigured } = {}) {
   results.push(await checkRemoteFfmpeg());
   const connect = notifications.publicConfig();
   results.push(check('connect', 'Connect webhook', connect.configured ? 'ok' : 'warn', connect.configured ? 'Discord webhook configured' : 'No Discord webhook configured'));
+  const plexCheck = checkPlex();
+  if (plexCheck) results.push(plexCheck);
   results.push(checkSqlite());
   results.push(checkJobs());
 

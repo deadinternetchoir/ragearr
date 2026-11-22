@@ -67,6 +67,7 @@
                 <option value="missing">Missing</option>
                 <option value="have">Have</option>
                 <option value="unmonitored">Unmonitored</option>
+                <option value="review">Needs review</option>
               </select>
               <button id="searchAllBtn" class="secondary" title="Queue a YouTube search for every monitored track that has no candidate yet">Search all</button>
               <button id="scanLibraryBtn" class="secondary">Scan library</button>
@@ -261,6 +262,27 @@
             </form>
             <p class="hint" id="spotifyCurrentValue"></p>
             <div id="spotifyTestResult" class="connection-test" hidden></div>
+          </div>
+
+          <div class="card">
+            <h2>Plex</h2>
+            <p class="hint">Follows chosen Plex music playlists and keeps a matching collection of videos in your Music Videos library. The Plex token is set on the server (RAGEARR_PLEX_TOKEN), never here.</p>
+            <form id="plexSettingsForm" class="col">
+              <label>Plex address <input name="baseUrl" placeholder="http://192.168.1.138:32400" autocomplete="off" /></label>
+              <label>Music Videos library <select name="videoSectionKey"><option value="">Test the connection first</option></select></label>
+              <label class="inline"><input type="checkbox" name="enabled" /> Sync automatically every 15 minutes</label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testPlexBtn">Test</button>
+                <button type="button" class="secondary" id="syncPlexBtn">Sync now</button>
+              </div>
+            </form>
+            <p class="hint" id="plexCurrentValue"></p>
+            <div id="plexTestResult" class="connection-test" hidden></div>
+            <h3>Playlists to follow</h3>
+            <div id="plexPlaylists"><p class="hint">Test the connection to list your Plex music playlists.</p></div>
+            <h3>Last sync</h3>
+            <pre class="hint" id="plexSyncStatus" style="white-space:pre-wrap"></pre>
           </div>
 
           <div class="card">

@@ -511,12 +511,13 @@ function candidateRow(track, c) {
   const rejectBtn = el('button', {
     class: 'secondary danger',
     text: 'Incorrect',
-    title: 'Hide this video and never suggest it again for this track',
+    title: track.status === 'imported' ? 'Wrong video: move this file to the trash, never suggest it again, and search for a replacement' : 'Hide this video and never suggest it again for this track',
     onclick: async (e) => {
       e.stopPropagation();
       rejectBtn.disabled = true;
       try {
-        await api(`/candidates/${c.id}/reject`, 'POST');
+        const rejected = await api(`/candidates/${c.id}/reject`, 'POST');
+        if (rejected && rejected.warning) alert(rejected.warning);
         await refreshCandidates(track.id);
         await loadTracks();
       } catch (err) {
@@ -534,7 +535,7 @@ function candidateRow(track, c) {
     el('span', { class: 'candidate-meta', text: c.origin || '' }),
     el('span', { class: 'candidate-meta', text: c.score != null ? String(c.score) : '' }),
     selectBtn,
-    c.selected && !retryable ? null : rejectBtn
+    c.selected && !retryable && track.status !== 'imported' ? null : rejectBtn
   );
 }
 
@@ -823,6 +824,7 @@ function renderTracksGrid() {
     if (statusFilter === 'have' && t.status !== 'imported') return false;
     if (statusFilter === 'missing' && t.status === 'imported') return false;
     if (statusFilter === 'unmonitored' && Number(t.monitored)) return false;
+    if (statusFilter === 'review' && !['candidates_found', 'no_match', 'download_failed'].includes(t.status)) return false;
     if (filterText) {
       const haystack = `${t.artist} ${t.track_name}`.toLowerCase();
       if (!haystack.includes(filterText)) return false;
@@ -1215,6 +1217,129 @@ async function loadSpotifySettings() {
     : 'Not configured yet. Spotify playlist URLs need client credentials; CSV exports still work without them.';
 }
 
+
+// ------------------------------------------------------------------ Plex ----
+let plexLists = [];
+
+function plexStatusText(status) {
+  const last = status.last;
+  if (!last) return 'No sync has run yet.';
+  const lines = [`${last.at}: ${last.ok ? 'finished' : 'FAILED: ' + last.error}`];
+  if (last.ok) {
+    lines.push(`Added ${last.added} songs to lists, took ${last.removedFromLists} out of lists.`);
+    lines.push(`Collections: ${last.addedToCollections} videos added, ${last.removedFromCollections} removed, ${(last.collectionsCreated || []).length} created.`);
+    for (const d of last.deleted || []) lines.push(`Deleted (song gone from Plex): ${d.track}`);
+  }
+  for (const w of last.warnings || []) lines.push('Warning: ' + w);
+  return lines.join('\n');
+}
+
+async function loadPlexSettings() {
+  const cfg = await api('/settings/plex');
+  const form = document.getElementById('plexSettingsForm');
+  form.baseUrl.value = cfg.baseUrl || '';
+  form.enabled.checked = Boolean(cfg.enabled);
+  const select = form.videoSectionKey;
+  if (cfg.videoSectionKey && !select.querySelector(`option[value="${CSS.escape(cfg.videoSectionKey)}"]`)) {
+    select.appendChild(el('option', { value: cfg.videoSectionKey, text: `Library ${cfg.videoSectionKey}` }));
+  }
+  select.value = cfg.videoSectionKey || '';
+  document.getElementById('plexCurrentValue').textContent = cfg.tokenSet
+    ? 'Plex token is set on the server.'
+    : 'Plex token is NOT set. Add RAGEARR_PLEX_TOKEN to the server environment file and restart Ragearr.';
+  const status = await api('/plex/status');
+  document.getElementById('plexSyncStatus').textContent = plexStatusText(status);
+}
+
+async function loadPlexPlaylists() {
+  const box = document.getElementById('plexPlaylists');
+  box.innerHTML = '';
+  let playlists;
+  try {
+    playlists = await api('/plex/playlists');
+  } catch (err) {
+    box.appendChild(el('p', { class: 'hint', text: err.message }));
+    return;
+  }
+  plexLists = await api('/wanted-lists');
+  if (!playlists.length) box.appendChild(el('p', { class: 'hint', text: 'No music playlists found in Plex.' }));
+  for (const p of playlists) {
+    const linked = plexLists.find((l) => String(l.plex_playlist_key) === String(p.key));
+    const follow = el('input', { type: 'checkbox' });
+    follow.checked = Boolean(linked && linked.plex_sync);
+    follow.disabled = p.smart; // smart playlists change by rule; follow normal playlists only
+    follow.addEventListener('change', async () => {
+      follow.disabled = true;
+      try {
+        if (linked) await api(`/wanted-lists/${linked.id}`, 'PATCH', { plex_sync: follow.checked });
+        else await api('/plex/lists', 'POST', { playlistKey: p.key, name: p.title });
+        await loadPlexPlaylists();
+      } catch (err) {
+        alert(err.message);
+        follow.disabled = false;
+      }
+    });
+    const auto = el('input', { type: 'checkbox' });
+    auto.checked = Boolean(linked && linked.auto_approve);
+    auto.disabled = !linked;
+    auto.addEventListener('change', async () => {
+      await api(`/wanted-lists/${linked.id}`, 'PATCH', { auto_approve: auto.checked });
+    });
+    box.appendChild(
+      el(
+        'div',
+        { class: 'row' },
+        el('label', { class: 'inline' }, follow, document.createTextNode(` ${p.title} (${p.count} songs${p.smart ? ', smart playlist' : ''})`)),
+        el('label', { class: 'inline', title: 'Download high-confidence matches without review' }, auto, document.createTextNode(' Auto-approve'))
+      )
+    );
+  }
+}
+
+document.getElementById('plexSettingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim(), videoSectionKey: form.videoSectionKey.value, enabled: form.enabled.checked });
+  await loadPlexSettings();
+});
+
+document.getElementById('testPlexBtn').addEventListener('click', async () => {
+  const form = document.getElementById('plexSettingsForm');
+  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim() });
+  const btn = document.getElementById('testPlexBtn');
+  btn.disabled = true;
+  try {
+    const result = await api('/plex/test', 'POST');
+    renderConnectionResult('plexTestResult', 'ok', `Connected to ${result.server} (Plex ${result.version}).`);
+    const select = form.videoSectionKey;
+    const keep = select.value;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Choose the Music Videos library' }));
+    for (const s of result.sections) select.appendChild(el('option', { value: s.key, text: `${s.title} (${s.type})` }));
+    select.value = keep;
+    await loadPlexPlaylists();
+  } catch (err) {
+    renderConnectionResult('plexTestResult', 'fail', err.message);
+  }
+  btn.disabled = false;
+});
+
+document.getElementById('syncPlexBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('syncPlexBtn');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  try {
+    await api('/plex/sync', 'POST', {});
+  } catch (err) {
+    alert(err.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sync now';
+  await loadPlexSettings();
+  await loadWantedLists();
+  await loadTracks();
+});
+
 document.getElementById('prowlarrSettingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
@@ -1562,6 +1687,7 @@ document.getElementById('restoreBackupBtn').addEventListener('click', async () =
     await loadJobs();
     await loadProwlarrSettings();
     await loadSpotifySettings();
+    await loadPlexSettings();
     await loadNotificationSettings();
     await loadDownloadClientSettings();
     await loadCandidateRulesSettings();
@@ -1634,6 +1760,7 @@ async function loadJobs() {
   await loadJobs();
   await loadProwlarrSettings();
   await loadSpotifySettings();
+  await loadPlexSettings();
   await loadNotificationSettings();
   await loadDownloadClientSettings();
   await loadCandidateRulesSettings();
