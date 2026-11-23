@@ -4,6 +4,8 @@ const path = require('path');
 const db = require('./db');
 const apiRouter = require('./routes/api');
 const jobQueue = require('./services/jobQueue');
+const autoSearch = require('./services/autoSearch');
+const plexSync = require('./services/plexSync');
 const thumbnails = require('./services/thumbnails');
 const users = require('./services/users');
 
@@ -15,6 +17,7 @@ const API_KEY = process.env.RAGEARR_API_KEY || '';
 // that was killed mid-job (a redeploy, a crash) - it can never actually
 // finish, so mark it failed rather than let it sit forever looking active.
 jobQueue.recoverStuckJobs();
+jobQueue.resume();
 users.deleteExpiredSessions();
 
 app.use(express.json({ limit: '25mb' }));
@@ -98,5 +101,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Ragearr listening on port ${PORT}`);
+  autoSearch.start();
+  plexSync.start();
   if (!API_KEY) console.warn('RAGEARR_API_KEY is not set; API auth is disabled.');
 });

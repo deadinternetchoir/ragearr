@@ -180,16 +180,24 @@ function el(tag, attrs, ...children) {
 
 const VIEW_TITLES = { tracks: 'Tracks', concerts: 'Concerts', activity: 'Activity', settings: 'Settings' };
 
+// The open page lives in the URL hash (#settings), so a refresh or the back button keeps it.
+function showView(name) {
+  if (!VIEW_TITLES[name]) name = 'tracks';
+  document.querySelectorAll('.sidebar-item').forEach((i) => i.classList.toggle('active', i.dataset.view === name));
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
+  document.getElementById('pageTitle').textContent = VIEW_TITLES[name];
+}
+
 document.querySelectorAll('.sidebar-item').forEach((item) => {
   item.querySelector('a').addEventListener('click', (e) => {
     e.preventDefault();
-    document.querySelectorAll('.sidebar-item').forEach((i) => i.classList.remove('active'));
-    document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-    item.classList.add('active');
-    document.getElementById('view-' + item.dataset.view).classList.add('active');
-    document.getElementById('pageTitle').textContent = VIEW_TITLES[item.dataset.view] || '';
+    showView(item.dataset.view);
+    history.pushState(null, '', '#' + item.dataset.view);
   });
 });
+
+window.addEventListener('popstate', () => showView(location.hash.slice(1)));
+showView(location.hash.slice(1));
 
 function renderCurrentUser() {
   const chip = document.getElementById('userChip');
@@ -325,6 +333,35 @@ function renderImportListPreview(preview) {
   );
 }
 
+function clearImportList() {
+  const form = document.getElementById('importListForm');
+  form.reset();
+  state.importListPreview = null;
+  document.getElementById('importListSummary').textContent = '';
+  document.getElementById('importListPreview').innerHTML = '';
+  document.getElementById('importListSubmitBtn').disabled = true;
+}
+
+document.getElementById('importListClearBtn').addEventListener('click', clearImportList);
+
+// Choosing a file loads its text into the pasted-list box (read in the browser; nothing is uploaded until Preview/Import).
+document.getElementById('importListFile').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const form = document.getElementById('importListForm');
+  try {
+    form.text.value = await file.text();
+  } catch (err) {
+    alert('Could not read file: ' + err.message);
+    return;
+  }
+  if (!form.name.value.trim()) form.name.value = file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+  state.importListPreview = null;
+  document.getElementById('importListSubmitBtn').disabled = true;
+  document.getElementById('importListSummary').textContent = `Loaded ${file.name}. Click Preview.`;
+  document.getElementById('importListPreview').innerHTML = '';
+});
+
 document.getElementById('importListForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = importListPayload();
@@ -384,7 +421,7 @@ function statusClass(status) {
   if (status === 'downloading' || status === 'searching' || status === 'approved' || status === 'candidates_found') {
     return 'status-active';
   }
-  if (status === 'no_match' || status === 'failed') return 'status-warn';
+  if (status === 'no_match' || status === 'failed' || status === 'download_failed') return 'status-warn';
   return 'status-muted';
 }
 
@@ -416,11 +453,21 @@ function thumbnailImg(src, label, className) {
   return el('div', { class: className }, img);
 }
 
+// Reload the open candidates panel only if it is still showing this track. A
+// background download finishing must not swap in its candidates while another
+// artist's panel is open.
+async function refreshCandidates(trackId) {
+  if (state.expandedTrackId !== trackId) return;
+  const rows = await api(`/tracks/${trackId}/candidates`);
+  if (state.expandedTrackId === trackId) state.expandedCandidates = rows;
+}
+
 function candidateRow(track, c) {
+  const retryable = c.selected && ['approved', 'download_failed'].includes(track.status);
   const selectBtn = el('button', {
     class: 'secondary',
-    text: c.selected ? 'Selected' : 'Select',
-    disabled: c.selected ? 'true' : null,
+    text: c.selected ? (retryable ? 'Retry download' : 'Selected') : 'Select',
+    disabled: c.selected && !retryable ? 'true' : null,
     onclick: async (e) => {
       e.stopPropagation();
       selectBtn.textContent = 'Selecting…';
@@ -429,7 +476,7 @@ function candidateRow(track, c) {
         await api(`/candidates/${c.id}/select`, 'POST');
       } catch (err) {
         alert('Select failed: ' + err.message);
-        selectBtn.textContent = 'Select';
+        selectBtn.textContent = retryable ? 'Retry download' : 'Select';
         selectBtn.disabled = false;
         return;
       }
@@ -445,7 +492,7 @@ function candidateRow(track, c) {
         jobId = result.jobId;
       } catch (err) {
         alert('Download failed to start: ' + err.message);
-        state.expandedCandidates = await api(`/tracks/${track.id}/candidates`);
+        await refreshCandidates(track.id);
         await loadTracks();
         return;
       }
@@ -465,8 +512,26 @@ function candidateRow(track, c) {
         }
         selectBtn.textContent = job.message || (job.status === 'running' ? 'Downloading…' : 'Queued…');
       }
-      state.expandedCandidates = await api(`/tracks/${track.id}/candidates`);
+      await refreshCandidates(track.id);
       await loadTracks();
+    },
+  });
+  const rejectBtn = el('button', {
+    class: 'secondary danger',
+    text: 'Incorrect',
+    title: track.status === 'imported' ? 'Wrong video: move this file to the trash, never suggest it again, and search for a replacement' : 'Hide this video and never suggest it again for this track',
+    onclick: async (e) => {
+      e.stopPropagation();
+      rejectBtn.disabled = true;
+      try {
+        const rejected = await api(`/candidates/${c.id}/reject`, 'POST');
+        if (rejected && rejected.warning) alert(rejected.warning);
+        await refreshCandidates(track.id);
+        await loadTracks();
+      } catch (err) {
+        alert('Failed to mark incorrect: ' + err.message);
+        rejectBtn.disabled = false;
+      }
     },
   });
   return el(
@@ -477,8 +542,34 @@ function candidateRow(track, c) {
     el('a', { href: c.url, target: '_blank', class: 'candidate-title', text: c.title, onclick: (e) => e.stopPropagation() }),
     el('span', { class: 'candidate-meta', text: c.origin || '' }),
     el('span', { class: 'candidate-meta', text: c.score != null ? String(c.score) : '' }),
-    selectBtn
+    selectBtn,
+    c.selected && !retryable && track.status !== 'imported' ? null : rejectBtn
   );
+}
+
+function manualLinkForm(t) {
+  const input = el('input', { type: 'text', placeholder: 'Paste a YouTube link to the correct video', class: 'manual-link-input' });
+  const btn = el('button', {
+    class: 'secondary',
+    text: 'Add link',
+    onclick: async (e) => {
+      e.stopPropagation();
+      if (!input.value.trim()) return;
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      try {
+        await api(`/tracks/${t.id}/candidates/manual`, 'POST', { url: input.value.trim() });
+        await refreshCandidates(t.id);
+        await loadTracks();
+      } catch (err) {
+        alert('Add link failed: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Add link';
+      }
+    },
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+  return el('div', { class: 'row manual-link-row' }, input, btn);
 }
 
 async function toggleTrackCandidates(track) {
@@ -627,7 +718,7 @@ function trackRow(t) {
       searchBtn.disabled = true;
       try {
         await api(`/tracks/${t.id}/search`, 'POST');
-        if (expanded) state.expandedCandidates = await api(`/tracks/${t.id}/candidates`);
+        await refreshCandidates(t.id);
       } catch (err) {
         alert('Search failed: ' + err.message);
       }
@@ -691,8 +782,8 @@ function trackRow(t) {
       el('td', { class: 'art-col' }, thumbnailImg(t.thumbnail_url, `${t.artist} - ${t.track_name}`, 'track-thumb')),
       el('td', { class: 'artist-col' }, el('span', { class: 'cell-title', title: t.artist, text: t.artist })),
       el('td', { class: 'title-col' }, el('span', { class: 'cell-title', title: t.track_name, text: t.track_name }), t.album ? el('span', { class: 'cell-subtitle', title: t.album, text: t.album }) : null),
-      el('td', { class: 'status-col' }, el('span', { class: `status-chip ${statusClass(t.status)}`, text: statusLabel(t.status) })),
-      el('td', { class: 'quality-col' }, el('span', { class: 'quality-chip', title: qualityProfile(t.quality_profile)?.description || '', text: profileName(t.quality_profile) })),
+      el('td', { class: 'status-col' }, el('span', { class: `status-chip ${statusClass(t.status)}`, title: t.last_error || '', text: statusLabel(t.status) })),
+      el('td', { class: 'quality-col' }, el('span', { class: 'quality-chip', title: qualityProfile(t.quality_profile)?.description || '', text: profileName(t.quality_profile) + (t.file_height ? ` · ${t.file_height}p` : '') })),
       el(
         'td',
         { class: 'file-col' },
@@ -707,7 +798,8 @@ function trackRow(t) {
   if (expanded) {
     const candidateRows = state.expandedCandidates.length
       ? state.expandedCandidates.map((c) => candidateRow(t, c))
-      : [el('p', { class: 'hint', text: 'No candidates yet — try Search.' })];
+      : [el('p', { class: 'hint', text: 'No candidates yet — try Search or paste a link.' })];
+    candidateRows.push(manualLinkForm(t));
     rows.push(
       el(
         'tr',
@@ -740,6 +832,7 @@ function renderTracksGrid() {
     if (statusFilter === 'have' && t.status !== 'imported') return false;
     if (statusFilter === 'missing' && t.status === 'imported') return false;
     if (statusFilter === 'unmonitored' && Number(t.monitored)) return false;
+    if (statusFilter === 'review' && !['candidates_found', 'no_match', 'download_failed'].includes(t.status)) return false;
     if (filterText) {
       const haystack = `${t.artist} ${t.track_name}`.toLowerCase();
       if (!haystack.includes(filterText)) return false;
@@ -1132,6 +1225,138 @@ async function loadSpotifySettings() {
     : 'Not configured yet. Spotify playlist URLs need client credentials; CSV exports still work without them.';
 }
 
+
+// ------------------------------------------------------------------ Plex ----
+let plexLists = [];
+
+function plexStatusText(status) {
+  const last = status.last;
+  if (!last) return 'No sync has run yet.';
+  const lines = [`${last.at}: ${last.ok ? 'finished' : 'FAILED: ' + last.error}`];
+  if (last.ok) {
+    lines.push(`Added ${last.added} songs to lists, took ${last.removedFromLists} out of lists.`);
+    lines.push(`Collections: ${last.addedToCollections} videos added, ${last.removedFromCollections} removed, ${(last.collectionsCreated || []).length} created.`);
+    for (const d of last.deleted || []) lines.push(`Deleted (song gone from Plex): ${d.track}`);
+  }
+  for (const w of last.warnings || []) lines.push('Warning: ' + w);
+  return lines.join('\n');
+}
+
+async function loadPlexSettings() {
+  const cfg = await api('/settings/plex');
+  const form = document.getElementById('plexSettingsForm');
+  form.baseUrl.value = cfg.baseUrl || '';
+  form.enabled.checked = Boolean(cfg.enabled);
+  const select = form.videoSectionKey;
+  if (cfg.videoSectionKey && !select.querySelector(`option[value="${CSS.escape(cfg.videoSectionKey)}"]`)) {
+    select.appendChild(el('option', { value: cfg.videoSectionKey, text: `Library ${cfg.videoSectionKey}` }));
+  }
+  select.value = cfg.videoSectionKey || '';
+  document.getElementById('plexCurrentValue').textContent = cfg.tokenSet
+    ? 'Plex token is set on the server.'
+    : 'Plex token is NOT set. Add RAGEARR_PLEX_TOKEN to the server environment file and restart Ragearr.';
+  const status = await api('/plex/status');
+  document.getElementById('plexSyncStatus').textContent = plexStatusText(status);
+  if (cfg.tokenSet && cfg.baseUrl) await refreshPlexConnection(false);
+}
+
+async function loadPlexPlaylists() {
+  const box = document.getElementById('plexPlaylists');
+  box.innerHTML = '';
+  let playlists;
+  try {
+    playlists = await api('/plex/playlists');
+  } catch (err) {
+    box.appendChild(el('p', { class: 'hint', text: err.message }));
+    return;
+  }
+  plexLists = await api('/wanted-lists');
+  if (!playlists.length) box.appendChild(el('p', { class: 'hint', text: 'No music playlists found in Plex.' }));
+  for (const p of playlists) {
+    const linked = plexLists.find((l) => String(l.plex_playlist_key) === String(p.key));
+    const follow = el('input', { type: 'checkbox' });
+    follow.checked = Boolean(linked && linked.plex_sync);
+    follow.disabled = p.smart; // smart playlists change by rule; follow normal playlists only
+    follow.addEventListener('change', async () => {
+      follow.disabled = true;
+      try {
+        if (linked) await api(`/wanted-lists/${linked.id}`, 'PATCH', { plex_sync: follow.checked });
+        else await api('/plex/lists', 'POST', { playlistKey: p.key, name: p.title });
+        await loadPlexPlaylists();
+      } catch (err) {
+        alert(err.message);
+        follow.disabled = false;
+      }
+    });
+    const auto = el('input', { type: 'checkbox' });
+    auto.checked = Boolean(linked && linked.auto_approve);
+    auto.disabled = !linked;
+    auto.addEventListener('change', async () => {
+      await api(`/wanted-lists/${linked.id}`, 'PATCH', { auto_approve: auto.checked });
+    });
+    box.appendChild(
+      el(
+        'div',
+        { class: 'row' },
+        el('label', { class: 'inline' }, follow, document.createTextNode(` ${p.title} (${p.count} songs${p.smart ? ', smart playlist' : ''})`)),
+        el('label', { class: 'inline', title: 'Download high-confidence matches without review' }, auto, document.createTextNode(' Auto-approve'))
+      )
+    );
+  }
+}
+
+document.getElementById('plexSettingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim(), videoSectionKey: form.videoSectionKey.value, enabled: form.enabled.checked });
+  await loadPlexSettings();
+});
+
+// Fills the library chooser and the playlist list from Plex. Runs on page load when Plex is
+// configured, and from the Test button.
+async function refreshPlexConnection(showResult) {
+  const form = document.getElementById('plexSettingsForm');
+  try {
+    const result = await api('/plex/test', 'POST');
+    if (showResult) renderConnectionResult('plexTestResult', 'ok', `Connected to ${result.server} (Plex ${result.version}).`);
+    const select = form.videoSectionKey;
+    const keep = select.value;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Choose the Music Videos library' }));
+    for (const s of result.sections) select.appendChild(el('option', { value: s.key, text: `${s.title} (${s.type})` }));
+    select.value = keep;
+    await loadPlexPlaylists();
+  } catch (err) {
+    if (showResult) renderConnectionResult('plexTestResult', 'fail', err.message);
+    else document.getElementById('plexPlaylists').textContent = 'Could not reach Plex: ' + err.message;
+  }
+}
+
+document.getElementById('testPlexBtn').addEventListener('click', async () => {
+  const form = document.getElementById('plexSettingsForm');
+  await api('/settings/plex', 'PUT', { baseUrl: form.baseUrl.value.trim() });
+  const btn = document.getElementById('testPlexBtn');
+  btn.disabled = true;
+  await refreshPlexConnection(true);
+  btn.disabled = false;
+});
+
+document.getElementById('syncPlexBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('syncPlexBtn');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  try {
+    await api('/plex/sync', 'POST', {});
+  } catch (err) {
+    alert(err.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sync now';
+  await loadPlexSettings();
+  await loadWantedLists();
+  await loadTracks();
+});
+
 document.getElementById('prowlarrSettingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
@@ -1285,18 +1510,63 @@ async function loadQualitySettings() {
   state.defaultQualityProfileId = cfg.defaultProfileId || 'balanced_1080p';
   fillQualitySelect(document.getElementById('addTrackQualityProfile'), state.defaultQualityProfileId);
   fillQualitySelect(document.getElementById('defaultQualityProfileSelect'), state.defaultQualityProfileId);
+  document.getElementById('upgradesEnabledBox').checked = cfg.upgradesEnabled !== false;
   const current = qualityProfile(state.defaultQualityProfileId);
   document.getElementById('qualityCurrentValue').textContent = current
     ? `Current default: ${current.name} - ${current.description}`
     : 'No default quality profile configured.';
 }
 
+async function loadAutoSearchSettings() {
+  const cfg = await api('/settings/auto-search');
+  document.getElementById('autoSearchEnabledBox').checked = cfg.enabled;
+  document.getElementById('autoSearchForm').retryNoMatchDays.value = cfg.retryNoMatchDays;
+}
+
+document.getElementById('autoSearchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  await api('/settings/auto-search', 'PUT', { enabled: form.enabled.checked, retryNoMatchDays: form.retryNoMatchDays.value });
+  document.getElementById('autoSearchResult').textContent = 'Saved.';
+});
+
+document.getElementById('autoSearchRunBtn').addEventListener('click', async () => {
+  const out = document.getElementById('autoSearchResult');
+  try {
+    const r = await api('/auto-search/run', 'POST', {});
+    out.textContent = `Queued ${r.searches} new search(es), ${r.retries} retr${r.retries === 1 ? 'y' : 'ies'}, ${r.upgrades} upgrade check(s). They run one at a time in the background.`;
+  } catch (err) {
+    out.textContent = 'Failed: ' + err.message;
+  }
+});
+
+document.getElementById('searchAllBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('searchAllBtn');
+  const out = document.getElementById('scanLibraryResult');
+  btn.disabled = true;
+  try {
+    const r = await api('/tracks/search-all', 'POST', { wanted_list_id: state.currentListId || undefined });
+    out.hidden = false;
+    out.textContent = r.queued
+      ? `Queued ${r.queued} search(es). They run in the background, one at a time; refresh the list to see candidates appear.`
+      : 'Nothing to search: every monitored track already has a candidate or a file.';
+  } catch (err) {
+    alert('Search all failed: ' + err.message);
+  }
+  btn.disabled = false;
+});
+
 document.getElementById('qualitySettingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = e.target;
-  await api('/settings/quality', 'PUT', { defaultProfileId: form.defaultProfileId.value });
+  const r = await api('/settings/quality', 'PUT', {
+    defaultProfileId: form.defaultProfileId.value,
+    upgradesEnabled: form.upgradesEnabled.checked,
+    applyToExisting: form.applyToExisting.checked,
+  });
+  form.applyToExisting.checked = false;
   await loadQualitySettings();
-  alert('Saved.');
+  alert(r.updated ? `Saved. ${r.updated} existing track(s) switched to this profile.` : 'Saved.');
 });
 
 function listToText(values) {
@@ -1434,6 +1704,7 @@ document.getElementById('restoreBackupBtn').addEventListener('click', async () =
     await loadJobs();
     await loadProwlarrSettings();
     await loadSpotifySettings();
+    await loadPlexSettings();
     await loadNotificationSettings();
     await loadDownloadClientSettings();
     await loadCandidateRulesSettings();
@@ -1499,12 +1770,14 @@ async function loadJobs() {
 (async function init() {
   await loadAuthStatus();
   await loadQualitySettings();
+  await loadAutoSearchSettings();
   await loadWantedLists();
   await loadTracks();
   await loadGrabs();
   await loadJobs();
   await loadProwlarrSettings();
   await loadSpotifySettings();
+  await loadPlexSettings();
   await loadNotificationSettings();
   await loadDownloadClientSettings();
   await loadCandidateRulesSettings();

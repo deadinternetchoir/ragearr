@@ -29,6 +29,18 @@ const os = require('os');
 const path = require('path');
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+// Optional: a Netscape-format cookies file lets yt-dlp fetch age-restricted videos. It
+// belongs to whoever runs this instance (never committed; lives in the /config volume).
+const COOKIES_PATH = process.env.YTDLP_COOKIES_PATH || '/config/youtube-cookies.txt';
+function cookieArgs() {
+  return fs.existsSync(COOKIES_PATH) ? ['--cookies', COOKIES_PATH] : [];
+}
+function friendlyError(msg) {
+  if (/confirm your age|age-restricted/i.test(msg || '')) {
+    return 'Age-restricted video: add a YouTube cookies file (see README) or mark this candidate Incorrect and pick another. ' + msg;
+  }
+  return msg;
+}
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 // Raised from 5: real reported false negatives (a "marketing image that
 // spins" and a "marketing image with some cuts" both passed as real
@@ -70,6 +82,41 @@ function ytSearch(query, count = 6) {
   });
 }
 
+// Pulls an 11-character video id out of a pasted YouTube link (or a bare id).
+function parseVideoId(input) {
+  const text = String(input || '').trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(text)) return text;
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`); } catch { return null; }
+  const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
+  let id = null;
+  if (host === 'youtu.be') id = u.pathname.split('/')[1];
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (u.pathname === '/watch') id = u.searchParams.get('v');
+    else {
+      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([^/]+)/);
+      if (m) id = m[1];
+    }
+  }
+  return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+}
+
+function videoInfo(videoId) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      YTDLP,
+      [...cookieArgs(), '--skip-download', '--no-playlist', '--print', '%(title)s\t%(channel)s\t%(duration)s', `https://www.youtube.com/watch?v=${videoId}`],
+      { timeout: 45000 },
+      (err, stdout) => {
+        if (err && !stdout) return reject(new Error(`yt-dlp lookup failed: ${err.code === 'ENOENT' ? 'yt-dlp not found' : err.message}`));
+        const [title, channel, duration] = stdout.split('\n')[0].split('\t');
+        if (!title) return reject(new Error('video not found or unavailable'));
+        resolve({ id: videoId, title, channel, duration: parseFloat(duration) || null });
+      }
+    );
+  });
+}
+
 function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -100,12 +147,37 @@ function coreTrackName(name) {
 // score; requiring at least 2 *unique* words before trusting the ratio at
 // all closes the same hole for a track name that's just one word long
 // (nothing left to require agreement on).
+// "MC Thunder II" contains "MC Thunder" but is a different song. A title that
+// continues the track name with a sequel marker (II, III, 2, Pt. 2, Part 2...)
+// is rejected unless the track name itself ends that way.
+const SEQUEL_AFTER_NAME_RE = /^\s*[\(\[]?\s*(?:pt\.?\s*|part\s*)?(?:ii|iii|iv|vi|2|3|4)\b/i;
+function isSequelTitle(candidateTitle, core) {
+  const lower = String(candidateTitle || '').toLowerCase();
+  const name = String(core || '').toLowerCase().trim();
+  if (!name) return false;
+  if (SEQUEL_AFTER_NAME_RE.test(name.slice(-4))) return false; // the track is itself numbered
+  const at = lower.indexOf(name);
+  if (at === -1) return false;
+  return SEQUEL_AFTER_NAME_RE.test(lower.slice(at + name.length));
+}
+
+// "Money" must not match inside "BLOODMONEY": the track name has to appear in the
+// title as whole words (curly/straight apostrophes treated alike).
+function containsAsWholeWords(title, core) {
+  const fold = (x) => String(x || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
+  const name = fold(core).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!name) return true;
+  // If punctuation differs so much that a literal find fails, don't veto on it here.
+  if (!new RegExp(name).test(fold(title))) return true;
+  return new RegExp(`(^|[^a-z0-9])${name}($|[^a-z0-9])`).test(fold(title));
+}
+
 function titleMatchesTrack(candidateTitle, trackName) {
   const core = coreTrackName(trackName);
   const nCore = normalize(core);
   const nCand = normalize(candidateTitle);
   if (!nCore) return false;
-  if (nCand.includes(nCore)) return true;
+  if (nCand.includes(nCore) && containsAsWholeWords(candidateTitle, core)) return !isSequelTitle(candidateTitle, core);
 
   const words = [...new Set(
     core
@@ -124,6 +196,8 @@ function titleMatchesTrack(candidateTitle, trackName) {
 const EXCLUDE_PHRASES = [
   /full album stream/i,
   /official audio/i,
+  /^\s*\d{1,2}\s*[.)]\s/, // "01. Song": album-track rip
+  /\baudio\b/i, // "[AUDIO ONLY]", "(Audio)": no picture, defeats the point of a music video
   /audio stream/i,
   /isolated vocals/i,
   /\blyric/i,
@@ -272,9 +346,10 @@ function rankOfficialMv(results, artist, trackName, trackDurationSec, rules = {}
       else if (diff > 90) score -= 2;
     }
     score += customRuleScore(r.title, rules);
-    ranked.push({ video: r, score, chMatch });
+    ranked.push({ video: r, score, chMatch, isOfficialTag });
   }
-  ranked.sort((a, b) => b.score - a.score);
+  // Equal scores: prefer a title tagged official video, then the more-viewed upload.
+  ranked.sort((a, b) => b.score - a.score || Number(b.isOfficialTag) - Number(a.isOfficialTag) || (b.video.views || 0) - (a.video.views || 0));
   return ranked;
 }
 
@@ -410,6 +485,12 @@ async function hasMotion(videoId) {
 async function pickFirstWithMotion(ranked) {
   const rejected = [];
   for (const candidate of ranked) {
+    // The storyboard scene count is unreliable for real videos (it scales with the
+    // tile resolution YouTube serves: official videos by Poppy and Electric Callboy
+    // scored 4 and 6 against a threshold of 12, while an audio-only upload scored
+    // 36). A title tagged official video from a matching channel or a well-viewed
+    // upload is trusted without it; the check still guards untagged uploads.
+    if (candidate.isOfficialTag && (candidate.chMatch || (candidate.video.views || 0) > 100000)) return { picked: candidate, rejected };
     const ok = await hasMotion(candidate.video.id);
     if (ok) return { picked: candidate, rejected };
     rejected.push(candidate.video.id);
@@ -432,8 +513,17 @@ async function pickFirstWithMotion(ranked) {
  * type: 'official_live') - removed entirely, not just disabled, since
  * nothing else in the codebase referenced that type.
  */
-async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
-  const mvResults = await ytSearch(`${artist} ${trackName} official music video`);
+async function findCandidate({ artist, trackName, durationSec, excludeIds = [] }, rules = {}) {
+  // Two searches, merged: the "official music video" wording alone misses some
+  // real videos (That Poppy - Money [Official Video] only appears for the plain
+  // "artist track" query), and the plain query alone misses others.
+  const [mvA, mvB] = await Promise.all([
+    ytSearch(`${artist} ${trackName} official music video`, 10),
+    ytSearch(`${artist} ${trackName}`, 10).catch(() => []),
+  ]);
+  const seen = new Set();
+  const skip = new Set(excludeIds); // videos the user marked incorrect for this track
+  const mvResults = [...mvA, ...mvB].filter((r) => r.id && !skip.has(r.id) && !seen.has(r.id) && seen.add(r.id));
   const rankedMv = rankOfficialMv(mvResults, artist, trackName, durationSec, rules);
   const highTierScore = Number(rules.highTierScore ?? 5);
   const mediumTierScore = Number(rules.mediumTierScore ?? 2);
@@ -462,7 +552,7 @@ async function findCandidate({ artist, trackName, durationSec }, rules = {}) {
   // corroboration that the video is actually associated with the artist,
   // not just a title that happens to score well.
   const mediumTierCandidates = rankedMv.filter(
-    (c) => c.score >= mediumTierScore && !highTierCandidates.includes(c) && (c.chMatch || c.video.views > minFallbackViews)
+    (c) => c.score >= mediumTierScore && !highTierCandidates.includes(c) && (c.chMatch || (c.isOfficialTag && c.video.views > minFallbackViews)) // a well-viewed upload with neither the artist's channel nor an official-video title is usually a fan re-upload
   );
   if (mediumTierCandidates.length > 0) {
     const { picked, rejected } = await pickFirstWithMotion(mediumTierCandidates);
@@ -480,6 +570,7 @@ function download(videoId, outPathTemplate, qualityProfile) {
     execFile(
       YTDLP,
       [
+        ...cookieArgs(),
         // AV1 excluded deliberately: no released NVIDIA Shield TV model has
         // hardware AV1 decode, and software decode at 4K isn't viable there.
         '-f', format,
@@ -490,10 +581,45 @@ function download(videoId, outPathTemplate, qualityProfile) {
       ],
       { maxBuffer: 20 * 1024 * 1024, timeout: 10 * 60 * 1000 },
       (err, stdout, stderr) => {
-        resolve({ ok: !err, error: err ? stderr || err.message : null });
+        resolve({ ok: !err, error: err ? friendlyError(stderr || err.message) : null });
       }
     );
   });
 }
 
-module.exports = { findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };
+// Tallest non-AV1 video format YouTube offers for a video, capped at maxHeight (null if unknown).
+// AV1 is skipped for the same reason download() skips it (no hardware decode on the Shield).
+function probeMaxHeight(videoId, maxHeight = 2160) {
+  return new Promise((resolve) => {
+    execFile(
+      YTDLP,
+      [...cookieArgs(), '-J', '--no-playlist', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`],
+      { maxBuffer: 50 * 1024 * 1024, timeout: 60000 },
+      (err, stdout) => {
+        if (err && !stdout) return resolve(null);
+        try {
+          const info = JSON.parse(stdout);
+          const heights = (info.formats || [])
+            .filter((f) => f.vcodec && f.vcodec !== 'none' && !String(f.vcodec).startsWith('av01') && Number.isFinite(f.height))
+            .map((f) => f.height)
+            .filter((h) => h <= maxHeight);
+          resolve(heights.length ? Math.max(...heights) : null);
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+// Pixel height of the first video stream in a local file, or null.
+function probeFileHeight(filePath) {
+  return new Promise((resolve) => {
+    execFile(FFMPEG, ['-i', filePath], { timeout: 15000 }, (err, stdout, stderr) => {
+      const m = (stderr || '').match(/Stream.*Video.*[ ,](\d{2,5})x(\d{2,5})/);
+      resolve(m ? parseInt(m[2], 10) : null);
+    });
+  });
+}
+
+module.exports = { parseVideoId, videoInfo, probeMaxHeight, probeFileHeight, findCandidate, download, titleMatchesTrack, channelMatchesArtist, rankOfficialMv, isExcluded, ytSearch };

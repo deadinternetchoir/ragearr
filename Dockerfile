@@ -5,8 +5,13 @@ FROM node:20-alpine
 # rTorrent download client (see src/services/downloadClients/rtorrent.js),
 # findutils for GNU find (library.js uses -printf, which busybox find lacks -
 # needed once a library root is mounted locally rather than reached over SSH)
-RUN apk add --no-cache python3 py3-pip ffmpeg openssh-client findutils && \
-    pip3 install --break-system-packages -U yt-dlp
+#
+# quickjs + yt-dlp-ejs: yt-dlp needs a JS runtime and its challenge-solver
+# scripts to extract many YouTube videos (age-restricted ones especially).
+# The base image's Node 20 is too old for yt-dlp to use, hence quickjs.
+RUN apk add --no-cache python3 py3-pip ffmpeg openssh-client findutils quickjs && \
+    pip3 install --break-system-packages -U yt-dlp yt-dlp-ejs && \
+    echo '--js-runtimes quickjs' > /etc/yt-dlp.conf
 
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -10,6 +10,8 @@
 const { sshExec, isLocal } = require('./sshExec');
 
 const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'webm', 'avi', 'mov'];
+const TRASH_DIR = '.trash'; // inside a root folder; Plex ignores dot-folders
+const TRASH_DAYS = 30;
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -77,7 +79,8 @@ function musicVideoRelativePath(artist, trackName, ext) {
 // \n-separated keeps the remote command simple.
 async function listFiles(conn, remotePath) {
   const nameClauses = VIDEO_EXTENSIONS.map((ext) => `-iname '*.${ext}'`).join(' -o ');
-  const cmd = `find ${shellQuote(remotePath)} -type f \\( ${nameClauses} \\) -printf '%P\\n'`;
+  // .trash holds files Ragearr removed (see moveToTrash); a scan must not treat them as library finds.
+  const cmd = `find ${shellQuote(remotePath)} -path ${shellQuote(`${remotePath}/${TRASH_DIR}`)} -prune -o -type f \\( ${nameClauses} \\) -printf '%P\\n'`;
   const out = await sshExec(conn, cmd, { timeout: 60000 });
   return out.split('\n').map((l) => l.trim()).filter(Boolean);
 }
@@ -221,7 +224,45 @@ async function scanConcerts(connOrFn, rootFolders, allGrabs) {
   return { entries, matches, unmatched };
 }
 
+
+function isSafeRelative(relPath) {
+  const text = String(relPath || '');
+  return Boolean(text) && !text.includes('\\') && !text.startsWith('/') && !text.split('/').some((part) => part === '..' || part === '');
+}
+
+// Moves a library file into <root>/.trash/<stamp>/<same relative path> instead of deleting
+// it, so a wrong removal can be undone for TRASH_DAYS days. Returns the trash path, or null
+// when the file was already gone.
+async function moveToTrash(conn, rootPath, relPath, stamp = new Date().toISOString().slice(0, 10)) {
+  if (!isSafeRelative(relPath) || relPath.split('/')[0] === TRASH_DIR) throw new Error('refusing to trash an unsafe path');
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(stamp)) throw new Error('bad trash stamp');
+  const src = `${rootPath}/${relPath}`;
+  const destDir = `${rootPath}/${TRASH_DIR}/${stamp}/${relPath.slice(0, relPath.lastIndexOf('/') + 1)}`.replace(/\/$/, '');
+  const dest = `${rootPath}/${TRASH_DIR}/${stamp}/${relPath}`;
+  const present = (await sshExec(conn, `test -f ${shellQuote(src)} && echo yes || echo no`, { timeout: 15000 })).trim();
+  if (present !== 'yes') return null; // already gone
+  await sshExec(conn, `mkdir -p ${shellQuote(destDir)} && mv -n ${shellQuote(src)} ${shellQuote(dest)}`, { timeout: 30000 });
+  await applyLocalOwnership(conn, { dirs: [`${rootPath}/${TRASH_DIR}`, `${rootPath}/${TRASH_DIR}/${stamp}`, destDir] });
+  // Drop the artist folder if that was its last file; ignore failure (folder still in use).
+  const srcDir = src.slice(0, src.lastIndexOf('/'));
+  await sshExec(conn, `rmdir ${shellQuote(srcDir)} 2>/dev/null || true`, { timeout: 15000 });
+  return dest;
+}
+
+// Deletes trashed files older than TRASH_DAYS, then any empty folders left in .trash.
+async function purgeTrash(conn, rootPath, days = TRASH_DAYS) {
+  const trash = `${rootPath}/${TRASH_DIR}`;
+  const n = Math.max(1, Math.floor(days));
+  const cmd = `test -d ${shellQuote(trash)} && find ${shellQuote(trash)} -type f -mtime +${n} -print -delete; test -d ${shellQuote(trash)} && find ${shellQuote(trash)} -mindepth 1 -type d -empty -delete; true`;
+  const out = await sshExec(conn, cmd, { timeout: 60000 });
+  return out.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
 module.exports = {
+  moveToTrash,
+  purgeTrash,
+  TRASH_DIR,
+  TRASH_DAYS,
   scanMusicVideos,
   scanConcerts,
   searchMusicVideoFiles,

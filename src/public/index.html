@@ -67,7 +67,9 @@
                 <option value="missing">Missing</option>
                 <option value="have">Have</option>
                 <option value="unmonitored">Unmonitored</option>
+                <option value="review">Needs review</option>
               </select>
+              <button id="searchAllBtn" class="secondary" title="Queue a YouTube search for every monitored track that has no candidate yet">Search all</button>
               <button id="scanLibraryBtn" class="secondary">Scan library</button>
               <button id="newListBtn" class="secondary">New list</button>
             </div>
@@ -92,10 +94,12 @@
             <form id="importListForm" class="col wide-col">
               <label>List name <input name="name" placeholder="Playlist, CSV, or source name" /></label>
               <label>URL <input name="url" placeholder="YouTube/Spotify playlist or CSV/plain-text URL" /></label>
+              <label>File <input type="file" name="file" id="importListFile" accept=".csv,.txt,text/csv,text/plain" /></label>
               <label>Pasted list <textarea name="text" rows="5" placeholder="artist, track name, album, duration&#10;Silverstein, Drain The Blood"></textarea></label>
               <div class="row">
                 <button type="submit">Preview</button>
                 <button type="button" class="secondary" id="importListSubmitBtn" disabled>Import</button>
+                <button type="button" class="secondary" id="importListClearBtn">Clear</button>
               </div>
             </form>
             <div id="importListSummary" class="hint"></div>
@@ -194,9 +198,24 @@
             <h2>Quality</h2>
             <form id="qualitySettingsForm" class="col">
               <label>Default quality profile <select name="defaultProfileId" id="defaultQualityProfileSelect"></select></label>
+              <label class="check"><input type="checkbox" name="applyToExisting" /> Also apply to tracks already in the list</label>
+              <label class="check"><input type="checkbox" name="upgradesEnabled" id="upgradesEnabledBox" /> Upgrade files automatically: when a taller version of the same video is available (up to the profile's cutoff), replace the file</label>
               <button type="submit">Save</button>
             </form>
             <p class="hint" id="qualityCurrentValue"></p>
+          </div>
+
+          <div class="card">
+            <h2>Automatic search</h2>
+            <form id="autoSearchForm" class="col">
+              <label class="check"><input type="checkbox" name="enabled" id="autoSearchEnabledBox" /> Every hour, search for monitored tracks that have nothing yet (results wait as candidates for you to review; nothing downloads on its own)</label>
+              <label>Retry "no match" tracks after (days) <input name="retryNoMatchDays" type="number" min="1" max="365" /></label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="autoSearchRunBtn">Run now</button>
+              </div>
+            </form>
+            <p class="hint" id="autoSearchResult"></p>
           </div>
 
           <div class="card">
@@ -243,6 +262,27 @@
             </form>
             <p class="hint" id="spotifyCurrentValue"></p>
             <div id="spotifyTestResult" class="connection-test" hidden></div>
+          </div>
+
+          <div class="card">
+            <h2>Plex</h2>
+            <p class="hint">Follows chosen Plex music playlists and keeps a matching collection of videos in your Music Videos library. The Plex token is set on the server (RAGEARR_PLEX_TOKEN), never here.</p>
+            <form id="plexSettingsForm" class="col">
+              <label>Plex address <input name="baseUrl" placeholder="http://your-plex-server:32400" autocomplete="off" /></label>
+              <label>Music Videos library <select name="videoSectionKey"><option value="">Test the connection first</option></select></label>
+              <label class="inline"><input type="checkbox" name="enabled" /> Sync automatically every 15 minutes</label>
+              <div class="row">
+                <button type="submit">Save</button>
+                <button type="button" class="secondary" id="testPlexBtn">Test</button>
+                <button type="button" class="secondary" id="syncPlexBtn">Sync now</button>
+              </div>
+            </form>
+            <p class="hint" id="plexCurrentValue"></p>
+            <div id="plexTestResult" class="connection-test" hidden></div>
+            <h3>Playlists to follow</h3>
+            <div id="plexPlaylists"><p class="hint">Test the connection to list your Plex music playlists.</p></div>
+            <h3>Last sync</h3>
+            <pre class="hint" id="plexSyncStatus" style="white-space:pre-wrap"></pre>
           </div>
 
           <div class="card">

@@ -70,7 +70,7 @@ mid.tables.tracks = [{ id: 1, artist: 'A', track_name: 'T', status: 'downloading
 mid.tables.jobs = [{ id: 1, type: 'track_download', ref_id: 1, label: 'A - T', status: 'running' }];
 backups.restoreBackup(db, mid);
 assert(db.prepare('SELECT status FROM jobs WHERE id = 1').get().status === 'failed', 'running job should be failed by restore');
-assert(db.prepare('SELECT status FROM tracks WHERE id = 1').get().status === 'approved', 'downloading track should be released by restore');
+assert(db.prepare('SELECT status FROM tracks WHERE id = 1').get().status === 'download_failed', 'downloading track should be released by restore');
 
 db.close();
 fs.rmSync(process.env.RAGEARR_DATA_DIR, { recursive: true, force: true });

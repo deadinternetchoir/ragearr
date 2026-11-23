@@ -8,6 +8,7 @@ const prowlarr = require('../services/prowlarr');
 const downloadClients = require('../services/downloadClients');
 const library = require('../services/library');
 const qualityProfiles = require('../services/qualityProfiles');
+const autoSearch = require('../services/autoSearch');
 const candidateRules = require('../services/candidateRules');
 const notifications = require('../services/notifications');
 const thumbnails = require('../services/thumbnails');
@@ -17,6 +18,8 @@ const spotify = require('../services/spotify');
 const rootFolders = require('../services/rootFolders');
 const backups = require('../services/backups');
 const users = require('../services/users');
+const plex = require('../services/plex');
+const plexSync = require('../services/plexSync');
 const { sshExec, scpUpload } = require('../services/sshExec');
 const jobQueue = require('../services/jobQueue');
 
@@ -60,17 +63,74 @@ jobQueue.registerHandler('track_download', async (job, progress) => {
     await library.applyLocalOwnership(conn, { dirs: [remoteDir], files: [`${root.path}/${relPath}`] });
 
     const thumbnailUrl = track.thumbnail_url || thumbnails.youtubeThumbnailUrl(candidate.external_id);
+    const fileHeight = await youtube.probeFileHeight(localFile);
     db.prepare(
-      "UPDATE tracks SET status = 'imported', matched_file_path = ?, root_folder_id = ?, thumbnail_url = COALESCE(thumbnail_url, ?), updated_at = datetime('now') WHERE id = ?"
-    ).run(relPath, root.id, thumbnailUrl, track.id);
+      "UPDATE tracks SET status = 'imported', matched_file_path = ?, root_folder_id = ?, thumbnail_url = COALESCE(thumbnail_url, ?), file_height = ?, upgrade_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).run(relPath, root.id, thumbnailUrl, fileHeight, track.id);
     notifications.notifyAndLog('onDownloadImported', {
       track,
       candidate,
       message: `Imported to ${root.name}/${relPath}`,
     });
   } catch (e) {
-    db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(track.id);
+    // Not 'approved': that looks like "queued" and hides the failure.
+    const firstError = String(e.message).split('\n').find((l) => /ERROR/.test(l)) || String(e.message).split('\n').find((l) => l.trim() && !/^WARNING/.test(l)) || e.message;
+    db.prepare("UPDATE tracks SET status = 'download_failed', last_error = ?, updated_at = datetime('now') WHERE id = ?").run(firstError.replace(/^ERROR:\s*/, '').slice(0, 300), track.id);
     notifications.notifyAndLog('onDownloadFailed', { track, candidate, error: e.message });
+    throw e;
+  } finally {
+    fs.rm(localFile, { force: true }, () => {});
+  }
+});
+
+// Quality upgrade: if the video already used for an imported track is now offered at a
+// taller resolution (up to the profile's cutoff) than the file we hold, download that and
+// replace the file. The old file is only replaced once the new one is fully uploaded and
+// really is taller; any failure leaves the track imported as it was.
+jobQueue.registerHandler('track_upgrade', async (job, progress) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(job.ref_id);
+  if (!track || track.status !== 'imported' || !track.matched_file_path) return;
+  const markChecked = () => db.prepare("UPDATE tracks SET upgrade_checked_at = datetime('now') WHERE id = ?").run(track.id);
+  const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
+  const profile = qualityProfiles.get(track.quality_profile || getDefaultQualityProfileId());
+  const root = rootFolders.rootForStored('music', track.root_folder_id) || rootFolders.defaultRoot('music');
+  const conn = root ? connForRoot(root) : null;
+  if (!candidate || candidate.source !== 'youtube' || !conn || !isSafeRelativeLibraryPath(track.matched_file_path)) return markChecked();
+
+  const finalPath = `${root.path}/${track.matched_file_path}`;
+  let currentHeight = track.file_height;
+  if (!currentHeight && conn.local) {
+    currentHeight = await youtube.probeFileHeight(finalPath);
+    if (currentHeight) db.prepare('UPDATE tracks SET file_height = ? WHERE id = ?').run(currentHeight, track.id);
+  }
+  if (currentHeight && currentHeight >= profile.cutoffHeight) return markChecked();
+
+  progress('checking for a higher resolution…');
+  const available = await youtube.probeMaxHeight(candidate.external_id, profile.cutoffHeight);
+  if (!available || (currentHeight && available <= currentHeight)) return markChecked();
+
+  const localTemplate = path.join(LOCAL_DOWNLOAD_DIR, `up-${track.id}.%(ext)s`);
+  const localFile = path.join(LOCAL_DOWNLOAD_DIR, `up-${track.id}.mkv`);
+  const tmpRemote = `${finalPath}.ragearr-upgrade`;
+  try {
+    fs.mkdirSync(LOCAL_DOWNLOAD_DIR, { recursive: true });
+    progress(`downloading ${available}p…`);
+    const dl = await youtube.download(candidate.external_id, localTemplate, profile);
+    if (!dl.ok) throw new Error(dl.error || 'yt-dlp download failed');
+    const newHeight = await youtube.probeFileHeight(localFile);
+    if (!newHeight || (currentHeight && newHeight <= currentHeight)) {
+      markChecked();
+      return; // not actually better - keep the existing file
+    }
+    progress('replacing the file…');
+    await scpUpload(conn, localFile, tmpRemote, { timeout: 10 * 60 * 1000 });
+    await sshExec(conn, `mv -f ${shellQuote(tmpRemote)} ${shellQuote(finalPath)}`);
+    await library.applyLocalOwnership(conn, { dirs: [], files: [finalPath] });
+    db.prepare("UPDATE tracks SET file_height = ?, upgrade_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(newHeight, track.id);
+    notifications.notifyAndLog('onDownloadImported', { track, candidate, message: `Upgraded ${currentHeight || '?'}p to ${newHeight}p` });
+  } catch (e) {
+    await sshExec(conn, `rm -f ${shellQuote(tmpRemote)}`).catch(() => {});
+    markChecked(); // try again next week rather than every hour
     throw e;
   } finally {
     fs.rm(localFile, { force: true }, () => {});
@@ -278,8 +338,10 @@ router.get('/tracks', (req, res) => {
   let sql = 'SELECT * FROM tracks WHERE 1=1';
   const params = [];
   if (wanted_list_id) {
-    sql += ' AND wanted_list_id = ?';
-    params.push(wanted_list_id);
+    // A list shows its own tracks plus the tracks a followed Plex playlist includes (a song
+    // already tracked under another list is one track, listed here through plex_members).
+    sql += ' AND (wanted_list_id = ? OR id IN (SELECT track_id FROM plex_members WHERE wanted_list_id = ?))';
+    params.push(wanted_list_id, wanted_list_id);
   }
   if (status) {
     sql += ' AND status = ?';
@@ -487,7 +549,7 @@ router.delete('/tracks/:id', async (req, res) => {
 // --- Candidates (review queue) ---
 
 router.get('/tracks/:id/candidates', (req, res) => {
-  const rows = db.prepare('SELECT * FROM candidates WHERE track_id = ? ORDER BY score DESC').all(req.params.id);
+  const rows = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND rejected = 0 ORDER BY manual DESC, score DESC').all(req.params.id);
   res.json(rows.map(candidateWithThumbnail));
 });
 
@@ -498,6 +560,65 @@ router.post('/candidates/:id/select', (req, res) => {
   db.prepare('UPDATE candidates SET selected = 1 WHERE id = ?').run(candidate.id);
   db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(candidate.track_id);
   res.json({ ok: true });
+});
+
+// Mark a candidate as incorrect: hidden, never offered again by later searches. If that
+// candidate is the video already in the library, the file goes to the trash folder (kept
+// 30 days) so it is not left sitting there, and a replacement is searched for at once.
+router.post('/candidates/:id/reject', async (req, res) => {
+  const candidate = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
+  if (!candidate) return res.status(404).json({ error: 'not found' });
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(candidate.track_id);
+  const fileInLibrary = Boolean(track && candidate.selected && track.status === 'imported' && track.matched_file_path);
+
+  let warning = null;
+  let removedFile = false;
+  if (fileInLibrary) {
+    try {
+      const root = rootFolders.rootForStored('music', track.root_folder_id);
+      const conn = root ? connForRoot(root) : null;
+      if (!root || !conn) throw new Error('the library path or SSH connection is not configured');
+      if (!isSafeRelativeLibraryPath(track.matched_file_path)) throw new Error('the stored file path is not a safe library path');
+      await library.moveToTrash(conn, root.path, track.matched_file_path);
+      removedFile = true;
+    } catch (e) {
+      warning = `marked incorrect, but the video file could not be removed: ${e.message}`;
+    }
+  }
+
+  db.prepare('UPDATE candidates SET rejected = 1, selected = 0 WHERE id = ?').run(candidate.id);
+  if (removedFile) {
+    db.prepare(
+      "UPDATE tracks SET status = 'pending', matched_file_path = NULL, file_height = NULL, upgrade_checked_at = NULL, last_error = NULL, updated_at = datetime('now') WHERE id = ?"
+    ).run(track.id);
+    jobQueue.enqueue('track_search', track.id, `Search: ${track.artist} - ${track.track_name}`);
+  } else {
+    const left = db.prepare('SELECT COUNT(*) n FROM candidates WHERE track_id = ? AND rejected = 0').get(candidate.track_id).n;
+    db.prepare(
+      "UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ? AND status IN ('approved', 'candidates_found', 'no_match', 'download_failed')"
+    ).run(left ? 'candidates_found' : 'pending', candidate.track_id);
+  }
+  res.json({ ok: true, removedFile, warning });
+});
+
+// Add a video the user picked by hand. Left unselected; Select starts the download as usual.
+router.post('/tracks/:id/candidates/manual', async (req, res) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
+  if (!track) return res.status(404).json({ error: 'not found' });
+  const videoId = youtube.parseVideoId(req.body?.url);
+  if (!videoId) return res.status(400).json({ error: 'That does not look like a YouTube video link' });
+  try {
+    const video = await youtube.videoInfo(videoId);
+    db.prepare('DELETE FROM candidates WHERE track_id = ? AND external_id = ? AND selected = 0').run(track.id, videoId);
+    const info = db.prepare(
+      `INSERT INTO candidates (track_id, source, external_id, title, origin, url, tier, score, metadata_json, manual)
+       VALUES (?, 'youtube', ?, ?, ?, ?, 'high', 100, ?, 1)`
+    ).run(track.id, videoId, video.title, video.channel || 'Manual link', `https://www.youtube.com/watch?v=${videoId}`, JSON.stringify(video));
+    db.prepare("UPDATE tracks SET status = CASE WHEN status IN ('pending','no_match') THEN 'candidates_found' ELSE status END, updated_at = datetime('now') WHERE id = ?").run(track.id);
+    res.json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // The actual missing piece from the original design: selecting a candidate
@@ -517,22 +638,28 @@ router.post('/candidates/:id/select', (req, res) => {
 // second download requested while one is already running is queued behind
 // it, not run concurrently - real, deliberate single-flight behaviour, not
 // an accident of the old blocking design.
+// Validates and queues the download for a track's selected candidate. Shared by the
+// Download button and by auto-approval. Returns { jobId } or { error, status }.
+function queueDownload(track) {
+  const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
+  if (!candidate) return { status: 400, error: 'no candidate selected for this track' };
+  if (candidate.source !== 'youtube') {
+    return { status: 400, error: `don't know how to download a '${candidate.source}' candidate` };
+  }
+  const root = rootFolders.defaultRoot('music');
+  if (!root) return { status: 400, error: 'No music-video root folder is configured - see PUT /api/settings/library' };
+  if (!connForRoot(root)) return { status: 400, error: SSH_NOT_CONFIGURED };
+
+  db.prepare("UPDATE tracks SET status = 'downloading', last_error = NULL, updated_at = datetime('now') WHERE id = ?").run(track.id);
+  return { jobId: jobQueue.enqueue('track_download', track.id, `${track.artist} - ${track.track_name}`) };
+}
+
 router.post('/tracks/:id/download', (req, res) => {
   const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
   if (!track) return res.status(404).json({ error: 'not found' });
-
-  const candidate = db.prepare('SELECT * FROM candidates WHERE track_id = ? AND selected = 1').get(track.id);
-  if (!candidate) return res.status(400).json({ error: 'no candidate selected for this track' });
-  if (candidate.source !== 'youtube') {
-    return res.status(400).json({ error: `don't know how to download a '${candidate.source}' candidate` });
-  }
-  const root = rootFolders.defaultRoot('music');
-  if (!root) return res.status(400).json({ error: 'No music-video root folder is configured - see PUT /api/settings/library' });
-  if (!connForRoot(root)) return res.status(400).json({ error: SSH_NOT_CONFIGURED });
-
-  db.prepare("UPDATE tracks SET status = 'downloading', updated_at = datetime('now') WHERE id = ?").run(track.id);
-  const jobId = jobQueue.enqueue('track_download', track.id, `${track.artist} - ${track.track_name}`);
-  res.status(202).json({ jobId });
+  const queued = queueDownload(track);
+  if (queued.error) return res.status(queued.status).json({ error: queued.error });
+  res.status(202).json({ jobId: queued.jobId });
 });
 
 router.get('/tracks/:id/manual-import/files', async (req, res) => {
@@ -627,18 +754,35 @@ router.get('/system/health', async (req, res) => {
 // Search YouTube for a candidate music video for one track, and record the
 // result as a candidate row (does not download anything — that's a separate
 // approve/download step, see the review-queue design in README.md).
-router.post('/tracks/:id/search', async (req, res) => {
-  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
-  if (!track) return res.status(404).json({ error: 'not found' });
+// Searches YouTube for one track and records the result as a candidate (does not
+// download). Shared by the Search button, "Search all" and the hourly auto-search.
+// Throws on a yt-dlp failure after putting the track back to 'pending'.
+// A track auto-approves when its own list, or any Plex list it belongs to, has Auto-approve on.
+function isAutoApproveTrack(track) {
+  const own = db.prepare('SELECT auto_approve FROM wanted_lists WHERE id = ?').get(track.wanted_list_id);
+  if (own && own.auto_approve) return true;
+  return Boolean(
+    db
+      .prepare(
+        `SELECT 1 FROM plex_members m JOIN wanted_lists l ON l.id = m.wanted_list_id
+         WHERE m.track_id = ? AND l.auto_approve = 1 LIMIT 1`
+      )
+      .get(track.id)
+  );
+}
 
+async function searchTrack(track) {
   db.prepare("UPDATE tracks SET status = 'searching', updated_at = datetime('now') WHERE id = ?").run(track.id);
   try {
     const result = await youtube.findCandidate({
       artist: track.artist,
       trackName: track.track_name,
       durationSec: track.duration_sec,
+      excludeIds: db.prepare('SELECT external_id FROM candidates WHERE track_id = ? AND rejected = 1').all(track.id).map((r) => r.external_id),
     }, candidateRules.get());
 
+    // A fresh search replaces earlier unreviewed candidates instead of piling up beside them.
+    db.prepare('DELETE FROM candidates WHERE track_id = ? AND selected = 0 AND rejected = 0 AND manual = 0').run(track.id);
     if (result.video) {
       const thumbnailUrl = thumbnails.youtubeThumbnailUrl(result.video.id);
       db.prepare(
@@ -660,8 +804,24 @@ router.post('/tracks/:id/search', async (req, res) => {
       );
     }
 
+    // Lists marked auto-approve take a high-confidence match without waiting for review.
+    // Medium and no-match results still wait for a person.
+    let autoApproved = false;
+    if (result.video && result.tier === 'high' && isAutoApproveTrack(track)) {
+      const row = db.prepare('SELECT id FROM candidates WHERE track_id = ? AND external_id = ? AND rejected = 0').get(track.id, result.video.id);
+      if (row) {
+        db.prepare('UPDATE candidates SET selected = 0 WHERE track_id = ?').run(track.id);
+        db.prepare('UPDATE candidates SET selected = 1 WHERE id = ?').run(row.id);
+        db.prepare("UPDATE tracks SET status = 'approved', last_searched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(track.id);
+        autoApproved = !queueDownload(track).error;
+        if (!autoApproved) db.prepare("UPDATE tracks SET status = 'candidates_found', updated_at = datetime('now') WHERE id = ?").run(track.id);
+      }
+    }
+
     const newStatus = result.tier === 'none' ? 'no_match' : 'candidates_found';
-    db.prepare("UPDATE tracks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(newStatus, track.id);
+    if (!autoApproved) {
+      db.prepare("UPDATE tracks SET status = ?, last_searched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(newStatus, track.id);
+    }
     if (result.video) {
       notifications.notifyAndLog('onCandidateFound', {
         track,
@@ -674,11 +834,46 @@ router.post('/tracks/:id/search', async (req, res) => {
     } else {
       notifications.notifyAndLog('onNoMatch', { track, message: 'Automatic search did not find a usable music video.' });
     }
-    res.json({ track_id: track.id, tier: result.tier, video: result.video });
+    return result;
   } catch (e) {
     db.prepare("UPDATE tracks SET status = 'pending', updated_at = datetime('now') WHERE id = ?").run(track.id);
+    throw e;
+  }
+}
+
+router.post('/tracks/:id/search', async (req, res) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(req.params.id);
+  if (!track) return res.status(404).json({ error: 'not found' });
+  try {
+    const result = await searchTrack(track);
+    res.json({ track_id: track.id, tier: result.tier, video: result.video });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Background search job (used by Search all and the hourly auto-search). Skips a track
+// that was approved, downloaded or removed since it was queued.
+jobQueue.registerHandler('track_search', async (job) => {
+  const track = db.prepare('SELECT * FROM tracks WHERE id = ?').get(job.ref_id);
+  if (!track || !['pending', 'no_match'].includes(track.status)) return;
+  await searchTrack(track);
+  await new Promise((r) => setTimeout(r, 1500)); // be gentle with YouTube during long runs
+});
+
+// Queue a search for every monitored track in the list (or all lists) that has nothing
+// yet: never searched, or searched with no match. Results land as candidates to review.
+router.post('/tracks/search-all', (req, res) => {
+  const listId = req.body?.wanted_list_id;
+  const rows = db
+    .prepare(
+      `SELECT id, artist, track_name FROM tracks
+       WHERE monitored = 1 AND status IN ('pending', 'no_match')
+       ${listId ? 'AND (wanted_list_id = ? OR id IN (SELECT track_id FROM plex_members WHERE wanted_list_id = ?))' : ''} ORDER BY id`
+    )
+    .all(...(listId ? [listId, listId] : []));
+  for (const t of rows) jobQueue.enqueue('track_search', t.id, `Search: ${t.artist} - ${t.track_name}`);
+  res.json({ queued: rows.length });
 });
 
 // --- Settings ---
@@ -720,15 +915,38 @@ router.post('/settings/prowlarr/test', adminOnly, async (req, res) => {
 router.get('/quality-profiles', (req, res) => {
   res.json({
     defaultProfileId: getDefaultQualityProfileId(),
+    upgradesEnabled: (settings.get('quality') || {}).upgradesEnabled !== false,
     profiles: qualityProfiles.all(),
   });
 });
 
 router.put('/settings/quality', (req, res) => {
-  const { defaultProfileId } = req.body;
+  const { defaultProfileId, upgradesEnabled, applyToExisting } = req.body;
   if (!qualityProfiles.isValid(defaultProfileId)) return res.status(400).json({ error: 'unknown quality profile' });
-  settings.set('quality', { defaultProfileId });
-  res.json({ ok: true });
+  const current = settings.get('quality') || {};
+  settings.set('quality', {
+    ...current,
+    defaultProfileId,
+    upgradesEnabled: upgradesEnabled === undefined ? current.upgradesEnabled : Boolean(upgradesEnabled),
+  });
+  let updated = 0;
+  if (applyToExisting) {
+    updated = db.prepare('UPDATE tracks SET quality_profile = ?, upgrade_checked_at = NULL WHERE quality_profile != ?').run(defaultProfileId, defaultProfileId).changes;
+  }
+  res.json({ ok: true, updated });
+});
+
+router.get('/settings/auto-search', (req, res) => {
+  res.json(autoSearch.getConfig());
+});
+
+router.put('/settings/auto-search', (req, res) => {
+  res.json(autoSearch.setConfig(req.body || {}));
+});
+
+// Run the hourly pass now (searches for new tracks, retries old no-matches, checks upgrades).
+router.post('/auto-search/run', (req, res) => {
+  res.json(autoSearch.run());
 });
 
 router.get('/settings/candidate-rules', (req, res) => {
@@ -936,6 +1154,109 @@ router.post('/concerts/grabs', async (req, res) => {
     db.prepare("UPDATE concert_grabs SET status = 'failed' WHERE id = ?").run(grabId);
     res.status(502).json({ id: grabId, status: 'failed', error: e.message });
   }
+});
+
+// --- Plex ---
+
+router.get('/settings/plex', (req, res) => {
+  res.json(plex.getConfig());
+});
+
+router.put('/settings/plex', adminOnly, (req, res) => {
+  try {
+    res.json(plex.setConfig(req.body || {}));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+function plexClientOrError(res) {
+  try {
+    return plex.clientFromSettings();
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+    return null;
+  }
+}
+
+router.post('/plex/test', adminOnly, async (req, res) => {
+  const client = plexClientOrError(res);
+  if (!client) return;
+  try {
+    const identity = await client.identity();
+    const sections = await client.sections();
+    res.json({ ok: true, server: identity.name, version: identity.version, sections });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+router.get('/plex/playlists', adminOnly, async (req, res) => {
+  const client = plexClientOrError(res);
+  if (!client) return;
+  try {
+    res.json(await client.audioPlaylists());
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+router.get('/plex/status', (req, res) => {
+  res.json(plexSync.status());
+});
+
+router.post('/plex/sync', adminOnly, async (req, res) => {
+  const client = plexClientOrError(res);
+  if (!client) return;
+  const result = await plexSync.run({ client, force: req.body?.allowBulkDelete === true });
+  res.json(result);
+});
+
+// Link a list to a Plex playlist (sync on), name its collection, or switch auto-approve.
+router.patch('/wanted-lists/:id', adminOnly, (req, res) => {
+  const list = db.prepare('SELECT * FROM wanted_lists WHERE id = ?').get(req.params.id);
+  if (!list) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const updates = [];
+  const params = [];
+  if (b.plex_sync !== undefined) {
+    updates.push('plex_sync = ?');
+    params.push(b.plex_sync ? 1 : 0);
+  }
+  if (b.plex_playlist_key !== undefined) {
+    updates.push('plex_playlist_key = ?');
+    params.push(b.plex_playlist_key ? String(b.plex_playlist_key) : null);
+  }
+  if (b.plex_collection !== undefined) {
+    updates.push('plex_collection = ?');
+    params.push(b.plex_collection ? String(b.plex_collection).trim().slice(0, 200) : null);
+  }
+  if (b.auto_approve !== undefined) {
+    updates.push('auto_approve = ?');
+    params.push(b.auto_approve ? 1 : 0);
+  }
+  if (b.name !== undefined && String(b.name).trim()) {
+    updates.push('name = ?');
+    params.push(String(b.name).trim().slice(0, 200));
+  }
+  if (!updates.length) return res.status(400).json({ error: 'no supported fields supplied' });
+  params.push(list.id);
+  db.prepare(`UPDATE wanted_lists SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  res.json(db.prepare('SELECT * FROM wanted_lists WHERE id = ?').get(list.id));
+});
+
+// Make a new wanted list from a Plex playlist in one step (used by the Plex settings card).
+router.post('/plex/lists', adminOnly, (req, res) => {
+  const key = String(req.body?.playlistKey || '').trim();
+  const name = String(req.body?.name || '').trim();
+  if (!key || !name) return res.status(400).json({ error: 'playlistKey and name are required' });
+  if (db.prepare('SELECT 1 FROM wanted_lists WHERE plex_playlist_key = ?').get(key)) {
+    return res.status(409).json({ error: 'that Plex playlist is already linked to a list' });
+  }
+  const info = db
+    .prepare("INSERT INTO wanted_lists (name, source_type, plex_sync, plex_playlist_key, plex_collection, auto_approve) VALUES (?, 'plex_playlist', 1, ?, ?, 1)")
+    .run(name, key, name);
+  res.status(201).json(db.prepare('SELECT * FROM wanted_lists WHERE id = ?').get(info.lastInsertRowid));
 });
 
 // --- Library (real "what's actually on disk" scan, Radarr-style) ---

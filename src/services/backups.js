@@ -7,6 +7,7 @@ const TABLES = [
   'wanted_lists',
   'tracks',
   'candidates',
+  'plex_members',
   'concert_grabs',
   'jobs',
 ];
@@ -122,6 +123,7 @@ function restoreBackup(db, input) {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM sessions').run();
     db.prepare('DELETE FROM candidates').run();
+    db.prepare('DELETE FROM plex_members').run();
     db.prepare('DELETE FROM tracks').run();
     db.prepare('DELETE FROM concert_grabs').run();
     db.prepare('DELETE FROM wanted_lists').run();
@@ -133,11 +135,12 @@ function restoreBackup(db, input) {
     insertRows(db, 'wanted_lists', backup.tables.wanted_lists);
     insertRows(db, 'tracks', backup.tables.tracks);
     insertRows(db, 'candidates', backup.tables.candidates);
+    insertRows(db, 'plex_members', backup.tables.plex_members);
     insertRows(db, 'concert_grabs', backup.tables.concert_grabs);
     insertRows(db, 'jobs', backup.tables.jobs);
     db.prepare("UPDATE jobs SET status = 'failed', message = COALESCE(message, 'Marked failed during restore'), updated_at = datetime('now') WHERE status IN ('queued', 'running')").run();
     // Nothing is running after a restore, so no track can still be downloading.
-    db.prepare("UPDATE tracks SET status = 'approved', updated_at = datetime('now') WHERE status = 'downloading'").run();
+    db.prepare("UPDATE tracks SET status = 'download_failed', last_error = 'interrupted by a restart', updated_at = datetime('now') WHERE status = 'downloading'").run();
   });
   restore();
   return { ok: true, restoredAt: new Date().toISOString(), summary };

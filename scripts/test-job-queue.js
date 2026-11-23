@@ -62,7 +62,7 @@ async function main() {
   const failing = jobQueue.enqueue('track_download', noCandidate, 'no candidate');
   await waitFor(() => jobStatus(failing).status === 'failed', 'job without a candidate to fail');
   assert(/no candidate/.test(jobStatus(failing).message), 'failure message should say why');
-  assert(trackStatus(noCandidate) === 'approved', `track should return to approved, is ${trackStatus(noCandidate)}`);
+  assert(trackStatus(noCandidate) === 'download_failed', `track should show as download_failed, is ${trackStatus(noCandidate)}`);
 
   const missing = jobQueue.enqueue('track_download', 999999, 'vanished track');
   await waitFor(() => jobStatus(missing).status === 'failed', 'job for a deleted track to fail');
@@ -78,7 +78,7 @@ async function main() {
   const unrelated = addTrack('imported');
   jobQueue.recoverStuckJobs();
   assert(!db.prepare("SELECT 1 FROM jobs WHERE status IN ('queued','running')").get(), 'recovery should fail all unfinished jobs');
-  assert(trackStatus(interrupted) === 'approved', 'a track whose download was interrupted should be released');
+  assert(trackStatus(interrupted) === 'download_failed', 'a track whose download was interrupted should be released as download_failed');
   assert(trackStatus(unrelated) === 'imported', 'other tracks are untouched');
 }
 
