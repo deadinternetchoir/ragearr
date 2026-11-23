@@ -75,7 +75,11 @@ async function apiGet(path) {
   const token = await accessToken();
   const res = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error?.message || `Spotify API request failed: HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error?.message || `Spotify API request failed: HTTP ${res.status}`);
+    err.spotifyStatus = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -99,9 +103,55 @@ function rowsFromPlaylistItems(items) {
   return rows;
 }
 
+// Rows from the track list that Spotify's public embed page carries. No login or API
+// credentials are needed, but the page lists at most about 100 tracks.
+function rowsFromEmbedHtml(html) {
+  const match = /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html || '');
+  if (!match) return [];
+  let data;
+  try {
+    data = JSON.parse(match[1]);
+  } catch {
+    return [];
+  }
+  const list = data?.props?.pageProps?.state?.data?.entity?.trackList;
+  if (!Array.isArray(list)) return [];
+  const clean = (text) => String(text || '').replace(/[\s\u00a0]+/g, ' ').trim();
+  const rows = [];
+  for (const t of list) {
+    const artist = clean(t.subtitle);
+    const track_name = clean(t.title);
+    if (!artist || !track_name || (t.entityType && t.entityType !== 'track')) continue;
+    rows.push({ artist, track_name, album: '', duration_sec: t.duration ? t.duration / 1000 : null, source_uri: t.uri || '' });
+  }
+  return rows;
+}
+
+async function embedRows(playlistId) {
+  const res = await fetch(`https://open.spotify.com/embed/playlist/${encodeURIComponent(playlistId)}`, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Ragearr)' },
+  });
+  if (!res.ok) throw new Error(`Spotify embed page request failed: HTTP ${res.status}`);
+  const rows = rowsFromEmbedHtml(await res.text());
+  if (!rows.length) throw new Error('Spotify did not return any tracks for this playlist (is it public?)');
+  return rows;
+}
+
 async function playlistRows(rawUrl) {
   const playlistId = playlistIdFromUrl(rawUrl);
   if (!playlistId) throw new Error('not a Spotify playlist URL');
+  // Spotify now refuses playlist contents to an app-only token (403), and API credentials are
+  // optional, so fall back to the embed page in both cases.
+  if (!configured()) return embedRows(playlistId);
+  try {
+    return await apiPlaylistRows(playlistId);
+  } catch (e) {
+    if (e.spotifyStatus === 403 || e.spotifyStatus === 401) return embedRows(playlistId);
+    throw e;
+  }
+}
+
+async function apiPlaylistRows(playlistId) {
   const fields = 'items(track(name,artists(name),album(name),duration_ms,uri,external_urls.spotify,type)),next';
   let path = `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=100&fields=${encodeURIComponent(fields)}`;
   const rows = [];
@@ -127,5 +177,6 @@ module.exports = {
   setConfig,
   playlistRows,
   rowsFromPlaylistItems,
+  rowsFromEmbedHtml,
   testConnection,
 };

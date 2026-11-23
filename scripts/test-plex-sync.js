@@ -212,6 +212,30 @@ async function guards() {
   assert(r.deleted.length === 12, 'force allows the bulk delete');
 }
 
+// A list that does not follow a Plex playlist (a Spotify or CSV import) still gets a collection
+// once a collection name is set, and a list with no collection name gets none.
+async function importedListCollection() {
+  const { state, client } = fakePlex();
+  const listId = db.prepare("INSERT INTO wanted_lists (name, source_type) VALUES ('Spot', 'spotify_playlist')").run().lastInsertRowid;
+  const otherId = db.prepare("INSERT INTO wanted_lists (name, source_type) VALUES ('NoColl', 'csv_import')").run().lastInsertRowid;
+  const ins = (listId, artist, title) =>
+    db.prepare("INSERT INTO tracks (wanted_list_id, artist, track_name, monitored) VALUES (?, ?, ?, 1)").run(listId, artist, title).lastInsertRowid;
+  importTrack(ins(listId, 'SpA', 'Spot One'), 'Sp/Spot One.mkv');
+  importTrack(ins(listId, 'SpB', 'Spot Two'), 'Sp/Spot Two.mkv');
+  ins(listId, 'SpC', 'Spot Pending');
+  importTrack(ins(otherId, 'NcA', 'Nc One'), 'Nc/Nc One.mkv');
+  await sync(client);
+  assert(!Object.values(state.collections).some((c) => c.title === 'Spot'), 'no collection name means no collection');
+  db.prepare("UPDATE wanted_lists SET plex_collection = 'Spot Mix' WHERE id = ?").run(listId);
+  const r = await sync(client);
+  const coll = Object.values(state.collections).find((c) => c.title === 'Spot Mix');
+  assert(coll && coll.items.size === 2 && coll.items.has('v:Sp/Spot One.mkv') && coll.items.has('v:Sp/Spot Two.mkv'), `imported list should fill its collection, got ${JSON.stringify(r)}`);
+  assert(!Object.values(state.collections).some((c) => c.title === 'NoColl'), 'other list stays out');
+  importTrack(db.prepare("SELECT id FROM tracks WHERE track_name = 'Spot Pending'").get().id, 'Sp/Spot Pending.mkv');
+  await sync(client);
+  assert(coll.items.size === 3, 'a later import joins the collection');
+}
+
 function request(port, method, url, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
@@ -299,6 +323,7 @@ async function routes() {
     await main();
     await guards();
     await restartRecovery();
+    await importedListCollection();
     await routes();
     console.log('plex sync tests passed');
     process.exit(0);
