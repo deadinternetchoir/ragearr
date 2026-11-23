@@ -8,6 +8,7 @@
 //     after two syncs in a row both find the song gone, never in bulk, never when Plex looks
 //     unwell (see the guards below).
 //  C. Ragearr -> Plex: imported videos are added to the Plex collection that matches the list.
+//     This covers playlist lists and any other list with a collection name (Spotify, CSV).
 //     Videos whose song left the playlist are taken out of the collection (the file stays).
 //     Videos that someone added to the collection by hand are left alone.
 const db = require('../db');
@@ -52,6 +53,16 @@ function defaultProfileId() {
 
 function syncedLists() {
   return db.prepare('SELECT * FROM wanted_lists WHERE plex_sync = 1 AND plex_playlist_key IS NOT NULL').all();
+}
+
+// Lists that get a Plex collection: those that follow a playlist, and any list (a Spotify or
+// CSV import, say) that has a collection name set. A list without a playlist takes its members
+// from its own tracks; a playlist list takes them from plex_members, so a song that left the
+// playlist is not pulled back in.
+function collectionLists() {
+  return db
+    .prepare("SELECT * FROM wanted_lists WHERE (plex_sync = 1 AND plex_playlist_key IS NOT NULL) OR COALESCE(TRIM(plex_collection), '') != ''")
+    .all();
 }
 
 // ---- A: playlists -> lists ----
@@ -236,9 +247,11 @@ async function syncCollections(client, lists, removedByList, videoSectionKey, ou
       const members = db
         .prepare(
           `SELECT t.* FROM tracks t JOIN plex_members m ON m.track_id = t.id
-           WHERE m.wanted_list_id = ?`
+           WHERE m.wanted_list_id = ?
+           UNION
+           SELECT t.* FROM tracks t WHERE t.wanted_list_id = ? AND ? = 0`
         )
-        .all(list.id);
+        .all(list.id, list.id, list.plex_playlist_key ? 1 : 0);
       const desired = [];
       for (const t of members) {
         if (t.status !== 'imported' || !t.matched_file_path) continue;
@@ -312,7 +325,7 @@ async function run({ client, videoSectionKey, force = false } = {}) {
     videoSectionKey = videoSectionKey || cfg.videoSectionKey;
     const removedByList = await syncPlaylists(client, lists, out);
     await syncDeletions(client, out, { force });
-    await syncCollections(client, syncedLists(), removedByList, videoSectionKey, out);
+    await syncCollections(client, collectionLists(), removedByList, videoSectionKey, out);
     await purgeTrashDaily(out);
     out.ok = true;
   } catch (e) {
@@ -352,4 +365,4 @@ function start() {
   loop();
 }
 
-module.exports = { keyFor, run, status, start, syncedLists, MAX_DELETES_PER_RUN, MISSING_RUNS_BEFORE_DELETE };
+module.exports = { keyFor, run, status, start, syncedLists, collectionLists, MAX_DELETES_PER_RUN, MISSING_RUNS_BEFORE_DELETE };
